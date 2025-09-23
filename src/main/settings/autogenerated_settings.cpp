@@ -330,6 +330,23 @@ Value EnableProgressBarSetting::GetSetting(const ClientContext &context) {
 }
 
 //===----------------------------------------------------------------------===//
+// Error On Empty Secret Create
+//===----------------------------------------------------------------------===//
+void ErrorOnEmptySecretCreateSetting::SetLocal(ClientContext &context, const Value &input) {
+	auto &config = ClientConfig::GetConfig(context);
+	config.error_on_empty_secret_create = input.GetValue<bool>();
+}
+
+void ErrorOnEmptySecretCreateSetting::ResetLocal(ClientContext &context) {
+	ClientConfig::GetConfig(context).error_on_empty_secret_create = ClientConfig().error_on_empty_secret_create;
+}
+
+Value ErrorOnEmptySecretCreateSetting::GetSetting(const ClientContext &context) {
+	auto &config = ClientConfig::GetConfig(context);
+	return Value::BOOLEAN(config.error_on_empty_secret_create);
+}
+
+//===----------------------------------------------------------------------===//
 // Errors As J S O N
 //===----------------------------------------------------------------------===//
 void ErrorsAsJSONSetting::SetLocal(ClientContext &context, const Value &input) {

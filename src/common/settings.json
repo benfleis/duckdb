@@ -450,6 +450,14 @@
         "custom_implementation": true
     },
     {
+        "name": "error_on_empty_secret_create",
+        "description": "Require available secret at time of create, otherwise fail",
+        "type": "BOOLEAN",
+        "scope": "local",
+        "default_scope": "local",
+        "default_value": "true"
+    },
+    {
         "name": "errors_as_json",
         "description": "Output error messages as structured JSON instead of as a raw string",
         "type": "BOOLEAN",

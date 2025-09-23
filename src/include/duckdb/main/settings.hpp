@@ -629,6 +629,16 @@ struct EnabledLogTypes {
 	static Value GetSetting(const ClientContext &context);
 };
 
+struct ErrorOnEmptySecretCreateSetting {
+	using RETURN_TYPE = bool;
+	static constexpr const char *Name = "error_on_empty_secret_create";
+	static constexpr const char *Description = "Require available secret at time of create, otherwise fail";
+	static constexpr const char *InputType = "BOOLEAN";
+	static void SetLocal(ClientContext &context, const Value &parameter);
+	static void ResetLocal(ClientContext &context);
+	static Value GetSetting(const ClientContext &context);
+};
+
 struct ErrorsAsJSONSetting {
 	using RETURN_TYPE = bool;
 	static constexpr const char *Name = "errors_as_json";
