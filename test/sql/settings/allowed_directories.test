@@ -141,7 +141,7 @@ Permission Error
 
 # we can attach databases in allowed directories
 statement ok
-ATTACH '{TEMP_DIR}/attached_dir.db' AS a1
+ATTACH '{LOCAL_TEMP_DIR}/attached_dir.db' AS a1
 
 statement ok
 CREATE TABLE a1.integers(i INTEGER);

@@ -228,12 +228,13 @@ string SQLLogicTestRunner::ReplaceKeywords(string input) {
 	// ProcessPath replaced, can simplify this into simple `ReplaceVariables` loop.
 	//
 	// Replace environment variables in the SQL
-	for (auto &it : environment_variables) {
-		auto &name = it.first;
-		auto &value = it.second;
-		input = StringUtil::Replace(input, StringUtil::Format("{%s}", name), value);
-		input = StringUtil::Replace(input, StringUtil::Format("${%s}", name), value);
-		input = StringUtil::Replace(input, StringUtil::Format("{%s}", name), value);
+	if (input.find('{') != string::npos) {
+		for (auto &it : environment_variables) {
+			auto &name = it.first;
+			auto &value = it.second;
+			input = StringUtil::Replace(input, StringUtil::Format("${%s}", name), value);
+			input = StringUtil::Replace(input, StringUtil::Format("{%s}", name), value);
+		}
 	}
 	auto &test_config = TestConfiguration::Get();
 	test_config.ProcessPath(input, file_name);
@@ -1073,7 +1074,7 @@ void SQLLogicTestRunner::ExecuteFile(string script) {
 				parser.Fail("test-env requires 2 arguments: <env name> <default env val>");
 			}
 			auto env_var = token.parameters[0];
-			auto env_actual = test_config.GetTestEnv(env_var, token.parameters[1]);
+			auto env_actual = test_config.GetVariable(env_var, token.parameters[1]);
 
 			// Check if we have something defining from our test
 			if (environment_variables.count(env_var)) {

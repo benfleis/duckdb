@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+[[ -n $TMUX_PANE ]] || {
+	echo "Requires tmux pane to run." >&2
+	exit 1
+}
+echo -n "$1" | grep -q '^[1-9]\+$' || {
+	echo "usage: run_tests_partitioned <num_partitions> [unittest_args...]" >&2
+	exit 1
+}
+#echo -n "$1" | grep -q '^\d\d\?$' || {
+#echo "Requires first argument as percentage (0-100)" >&2
+#exit 1
+#}
+: ${UNITTEST:=build/debug/test/unittest}
+parts=$1
+shift
+
+part_size=$((100 / $parts))
+start=$((100 - $part_size))
+finish=100
+[[ "$parts" -ge 2 ]] && for i in $(seq 2 $parts); do
+	"$UNITTEST" --start-offset-percentage=$start --end-offset-percentage=$finish "$@" | tmux split-window -l "${part_size}%" -dI &
+	start=$(($start - part_size))
+	finish=$(($finish - part_size))
+done
+"$UNITTEST" --end-offset-percentage=$finish "$@"
