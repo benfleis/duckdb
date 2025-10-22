@@ -9,17 +9,21 @@
 
 #pragma once
 
-#include "duckdb/common/common.hpp"
-#include "duckdb/common/optional_idx.hpp"
-#include "duckdb/common/enums/debug_vector_verification.hpp"
-#include "duckdb/common/types/value.hpp"
 #include "duckdb/common/atomic.hpp"
-#include "duckdb/common/mutex.hpp"
+#include "duckdb/common/common.hpp"
 #include "duckdb/common/enums/debug_initialize.hpp"
+#include "duckdb/common/enums/debug_vector_verification.hpp"
+#include "duckdb/common/mutex.hpp"
+#include "duckdb/common/optional_idx.hpp"
+#include "duckdb/common/re2_regex.hpp"
+#include "duckdb/common/types/value.hpp"
+
 #include <sys/types.h>
 #include <unordered_map>
 
 namespace duckdb {
+
+using Regex = duckdb_re2::Regex;
 
 enum class SortStyle : uint8_t { NO_SORT, ROW_SORT, VALUE_SORT };
 
@@ -84,6 +88,7 @@ public:
 	vector<unordered_set<string>> GetSelectTagSets();
 	vector<unordered_set<string>> GetSkipTagSets();
 	SelectPolicy GetPolicyForTagSet(const vector<string> &tag_set);
+	SelectPolicy GetPolicyForSourceREs(const vector<string> &source_lines);
 	vector<ConfigSetting> GetConfigSettings();
 	string GetDataDirectory();
 	string GetLocalTempDirectory();
@@ -99,6 +104,8 @@ public:
 	static bool TryParseSortStyle(const string &sort_style, SortStyle &result);
 	static void AppendSelectTagSet(const Value &tag_set);
 	static void AppendSkipTagSet(const Value &tag_set);
+	static void AppendSelectRE(const Value &re);
+	static void AppendSkipRE(const Value &re);
 
 private:
 	case_insensitive_map_t<Value> options;
@@ -112,6 +119,9 @@ private:
 
 	vector<unordered_set<string>> select_tag_sets;
 	vector<unordered_set<string>> skip_tag_sets;
+
+	vector<Regex> select_res;
+	vector<Regex> skip_res;
 
 	bool is_finalized;
 

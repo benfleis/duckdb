@@ -1,6 +1,7 @@
 #include "test_config.hpp"
 #include "pid.hpp"
 #include "duckdb/common/enum_util.hpp"
+#include "duckdb/common/re2_regex.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -69,6 +70,10 @@ static const TestConfigOption test_config_options[] = {
      TestConfiguration::AppendSkipTagSet},
     {"skip_tag_set", "Skip tests which match _all_ named tags (multiple sets are OR'd)",
      LogicalType::LIST(LogicalType::VARCHAR), TestConfiguration::AppendSkipTagSet},
+    {"select_source_re", "Select tests whose script source (.test*) matches the given regex", LogicalType::VARCHAR,
+     TestConfiguration::AppendSelectRE},
+    {"skip_source_re", "Skip tests whose script source (.test*) matches the given regex", LogicalType::VARCHAR,
+     TestConfiguration::AppendSkipRE},
     {"settings", "Configuration settings to apply",
      LogicalType::LIST(LogicalType::STRUCT({{"name", LogicalType::VARCHAR}, {"value", LogicalType::VARCHAR}})),
      nullptr},
@@ -614,6 +619,49 @@ TestConfiguration::SelectPolicy TestConfiguration::GetPolicyForTagSet(const vect
 	for (const auto &skip_tag_set : skip_tag_sets) {
 		if (is_subset(skip_tag_set, subject_tag_set)) {
 			return TestConfiguration::SelectPolicy::SKIP;
+		}
+	}
+	return policy;
+}
+
+void TestConfiguration::AppendSelectRE(const Value &re_val) {
+	// TODO: wrap and provide better error
+	// TODO: combine into single RE
+	TestConfiguration::Get().select_res.emplace_back(re_val.GetValue<string>());
+}
+
+void TestConfiguration::AppendSkipRE(const Value &re_val) {
+	// TODO: wrap and provide better error
+	// TODO: combine into single RE
+	TestConfiguration::Get().skip_res.emplace_back(re_val.GetValue<string>());
+}
+
+// NOTE: this model of policy assumes simply that all selects are applied to the All set, then
+// all skips are applied to that result. (Typical alternative: CLI ordering where each
+// select/skip operation is applied in sequence.)
+TestConfiguration::SelectPolicy TestConfiguration::GetPolicyForSourceREs(const vector<string> &source_lines) {
+	using Match = duckdb_re2::Match;
+
+	// Apply select_tag_set first then skip_tag_set; if both empty always NONE
+	auto policy = TestConfiguration::SelectPolicy::NONE;
+	// select: if >= 1 select_tag_set is subset of subject_tag_set
+	// if count(select_tag_sets) > 0 && no matches, SKIP
+	Match ignored;
+	for (const auto &select_re : select_res) {
+		for (const auto &line : source_lines) {
+			policy = TestConfiguration::SelectPolicy::SKIP; // >=1 sets => SKIP || SELECT
+			if (duckdb_re2::RegexSearch(line, ignored, select_re)) {
+				policy = TestConfiguration::SelectPolicy::SELECT;
+				break;
+			}
+		}
+	}
+	// skip: if >=1 skip_re is subset of subject_re, else passthrough
+	for (const auto &skip_re : skip_res) {
+		for (const auto &line : source_lines) {
+			if (duckdb_re2::RegexSearch(line, ignored, skip_re)) {
+				return TestConfiguration::SelectPolicy::SKIP;
+			}
 		}
 	}
 	return policy;
