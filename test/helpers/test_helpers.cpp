@@ -19,6 +19,7 @@
 
 using namespace std;
 
+// XXX: kill me
 #define TESTING_DIRECTORY_NAME "duckdb_unittest_tempdir"
 
 namespace duckdb {

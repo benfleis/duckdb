@@ -1,9 +1,13 @@
 #include "test_config.hpp"
-#include "duckdb/common/types.hpp"
-#include "duckdb/common/string_util.hpp"
+#include "pid.hpp"
 #include "duckdb/common/enum_util.hpp"
-#include "test_helpers.hpp"
+#include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/common/virtual_file_system.hpp"
+#include "test_helpers.hpp"
+#include <cstddef>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <unordered_set>
@@ -43,6 +47,9 @@ static const TestConfigOption test_config_options[] = {
     {"test_env", "The test variables",
      LogicalType::LIST(LogicalType::STRUCT({{"env_name", LogicalType::VARCHAR}, {"env_value", LogicalType::VARCHAR}})),
      nullptr},
+    {"data_dir", "shortcut: sets env[DATA_DIR]", LogicalType::VARCHAR, nullptr},
+    {"temp_dir_base", "shortcut: base used to construct TEMP_DIR (if not directly set)", LogicalType::VARCHAR, nullptr},
+    {"temp_dir", "shortcut: sets env[TEMP_DIR]", LogicalType::VARCHAR, nullptr},
     {"skip_tests", "Tests to be skipped",
      LogicalType::LIST(
          LogicalType::STRUCT({{"reason", LogicalType::VARCHAR}, {"paths", LogicalType::LIST(LogicalType::VARCHAR)}})),
@@ -67,6 +74,9 @@ static const TestConfigOption test_config_options[] = {
      nullptr},
     {nullptr, nullptr, LogicalType::INVALID, nullptr},
 };
+
+const string TestConfiguration::DATA_DIR_DEFAULT = "data";
+const string TestConfiguration::TEMP_DIR_BASE_DEFAULT = "duckdb_unittest_tempdir";
 
 TestConfiguration &TestConfiguration::Get() {
 	static TestConfiguration instance;
@@ -107,21 +117,82 @@ void TestConfiguration::Initialize() {
 
 	working_dir = FileSystem::GetWorkingDirectory();
 	test_uuid = UUID::ToString(UUID::GenerateRandomUUID());
-	UpdateEnvironment();
 }
 
-void TestConfiguration::UpdateEnvironment() {
-	// Setup standard vars
+void TestConfiguration::Finalize() {
+	D_ASSERT(!is_finalized);
+	MakeVariables();
 
-	// XXX: UUID used by ducklake to avoid collisions, is there a better way?
-	test_env["TEST_UUID"] = test_uuid;
-	test_env["BUILD_DIR"] = string(DUCKDB_BUILD_DIRECTORY);
-	test_env["WORKING_DIR"] = working_dir;        // can be overridden per runner
-	test_env["DATA_DIR"] = working_dir + "/data"; // default: data/
+	VirtualFileSystem fs;
+	// FIXME: how to manage non-local TEMP_DIR? e.g. azure module not loaded here but ideally we prep env here...
+	auto vars = {"LOCAL_TEMP_DIR" /*, "TEMP_DIR"*/};
+	for (const auto &var : vars) {
+		auto path = variables[var];
+		if (!fs.DirectoryExists(path, nullptr)) {
+			fs.CreateDirectory(path, nullptr);
+		}
+	}
+	TestDirectoryPath();
+	is_finalized = true;
+}
 
-	string temp_dir = TestDirectoryPath();
-	test_env["TEMP_DIR"] = temp_dir;                      // default: duckdb_unittest_tempdir/$PID
-	test_env["CATALOG_DIR"] = temp_dir + "/" + test_uuid; // _not_ guaranteed to exist
+string TestConfiguration::GetDataDirectory() {
+	auto dir = options.find("data_dir");
+	if (dir != options.end()) {
+		// use as specified, including relative spec
+		return dir->second.GetValue<string>();
+	}
+	// default
+	return working_dir + "/" + TestConfiguration::DATA_DIR_DEFAULT;
+}
+
+string TestConfiguration::GetLocalTempDirectory() {
+	// FIXME: temp hack to carry on with azure write
+	return TEMP_DIR_BASE_DEFAULT + "/" + to_string(getpid());
+}
+
+string TestConfiguration::GetTempDirectory() {
+	// NOTE: bad juju to have conflicting TEMP_DIR_BASE and TEMP_DIR from different levels
+	// Simple approach: get most specific first (opt) in each form, then get from env.
+
+	// First: get from options which is first explicit on CLI, second process ENVVAR
+	auto opt_dir = options.find("temp_dir");
+	if (opt_dir != options.end()) {
+		return opt_dir->second.GetValue<string>();
+	}
+
+	auto opt_base = options.find("temp_dir_base");
+	if (opt_base != options.end()) {
+		return opt_base->second.GetValue<string>() + "/" + to_string(getpid());
+	}
+
+	// Then get from existing test_env specs
+	auto env_dir = variables.find("temp_dir");
+	if (env_dir != variables.end()) {
+		return env_dir->second;
+	}
+
+	auto env_base = variables.find("temp_dir_base");
+	if (env_base != variables.end()) {
+		return env_base->second + "/" + to_string(getpid());
+	}
+
+	// Then build from default
+	return TEMP_DIR_BASE_DEFAULT + "/" + to_string(getpid());
+}
+
+void TestConfiguration::MakeVariables() {
+	D_ASSERT(!is_finalized);
+
+	// Setup standard vars --
+	variables["BUILD_DIR"] = string(DUCKDB_BUILD_DIRECTORY);
+	variables["TEST_UUID"] = test_uuid; // NOTE: possibly later removable, seems a hook for ducklake?
+
+	variables["DATA_DIR"] = GetDataDirectory();            // default ./data
+	variables["TEMP_DIR"] = GetTempDirectory();            // default: duckdb_unittest_tempdir/$PID
+	variables["LOCAL_TEMP_DIR"] = GetLocalTempDirectory(); // default: duckdb_unittest_tempdir/$PID
+
+	variables["WORKING_DIR"] = working_dir; // can be overridden per runner
 }
 
 string TestConfiguration::GetWorkingDirectory() {
@@ -137,7 +208,11 @@ bool TestConfiguration::ChangeWorkingDirectory(const string &dir) {
 	if (working_dir != normalized) {
 		rv = true;
 		working_dir = normalized;
-		UpdateEnvironment();
+
+		variables["WORKING_DIR"] = working_dir; // can be overridden per runner
+		// XXX: unclear whether this actually makes sense, need to check but seems logical given that
+		// it was previously "data/"
+		variables["DATA_DIR"] = GetDataDirectory();
 	}
 	return rv;
 }
@@ -452,25 +527,26 @@ vector<ConfigSetting> TestConfiguration::GetConfigSettings() {
 	return result;
 }
 
-string TestConfiguration::GetTestEnv(const string &key, const string &default_value) {
-	if (test_env.empty() && options.find("test_env") != options.end()) {
-		auto entry = options["test_env"];
+// TODO: rename to GetVariableValue
+string TestConfiguration::GetVariable(const string &key, const string &default_value) {
+	if (variables.empty() && options.find("variables") != options.end()) {
+		auto entry = options["variables"];
 		auto list_children = ListValue::GetChildren(entry);
 		for (const auto &value : list_children) {
 			auto &struct_children = StructValue::GetChildren(value);
 			auto &env = StringValue::Get(struct_children[0]);
 			auto &env_value = StringValue::Get(struct_children[1]);
-			test_env[env] = env_value;
+			variables[env] = env_value;
 		}
 	}
-	if (test_env.find(key) == test_env.end()) {
+	if (variables.find(key) == variables.end()) {
 		return default_value;
 	}
-	return test_env[key];
+	return variables[key];
 }
 
-const unordered_map<string, string> &TestConfiguration::GetTestEnvMap() {
-	return test_env;
+const unordered_map<string, string> &TestConfiguration::GetVariables() {
+	return variables;
 }
 
 DebugVectorVerification TestConfiguration::GetVectorVerification() {

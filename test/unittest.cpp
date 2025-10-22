@@ -1,7 +1,7 @@
 #define CATCH_CONFIG_RUNNER
 #include "catch.hpp"
 
-#include "duckdb/common/file_system.hpp"
+#include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "sqlite/sqllogic_test_logger.hpp"
 #include "test_helpers.hpp"
@@ -10,7 +10,7 @@
 using namespace duckdb;
 
 int main(int argc_in, char *argv[]) {
-	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	duckdb::unique_ptr<VirtualFileSystem> fs;
 	string test_directory = DUCKDB_ROOT_DIRECTORY;
 
 	auto &test_config = TestConfiguration::Get();
@@ -26,7 +26,7 @@ int main(int argc_in, char *argv[]) {
 		} else if (argument == "--test-temp-dir") {
 			SetDeleteTestPath(false);
 			auto test_dir = string(argv[++i]);
-			if (fs->DirectoryExists(test_dir)) {
+			if (fs->DirectoryExists(test_dir, nullptr)) {
 				fprintf(stderr, "--test-temp-dir cannot point to a directory that already exists (%s)\n",
 				        test_dir.c_str());
 				return 1;
@@ -40,6 +40,7 @@ int main(int argc_in, char *argv[]) {
 		}
 	}
 	test_config.ChangeWorkingDirectory(test_directory);
+	test_config.Finalize();
 
 	// delete the testing directory if it exists
 	auto dir = TestCreatePath("");
