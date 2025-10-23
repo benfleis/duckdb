@@ -151,9 +151,11 @@ string TestConfiguration::GetDataDirectory() {
 	return working_dir + "/" + TestConfiguration::DATA_DIR_DEFAULT;
 }
 
-string TestConfiguration::GetLocalTempDirectory() {
-	// FIXME: temp hack to carry on with azure write
-	return TEMP_DIR_BASE_DEFAULT + "/" + to_string(getpid());
+string TestConfiguration::GetTempDirectoryFromBase(const string &base) {
+	std::time_t time = std::time({});
+	char time_str[sizeof("yyyy-mm-ddThh:mm:ssZ")];
+	std::strftime(time_str, sizeof(time_str), "%FT%TZ", std::gmtime(&time));
+	return base + "/" + time_str + "--pid=" + to_string(getpid());
 }
 
 string TestConfiguration::GetTempDirectory() {
@@ -168,22 +170,21 @@ string TestConfiguration::GetTempDirectory() {
 
 	auto opt_base = options.find("temp_dir_base");
 	if (opt_base != options.end()) {
-		return opt_base->second.GetValue<string>() + "/" + to_string(getpid());
+		return GetTempDirectoryFromBase(opt_base->second.GetValue<string>());
 	}
 
 	// Then get from existing test_env specs
-	auto env_dir = variables.find("temp_dir");
-	if (env_dir != variables.end()) {
-		return env_dir->second;
+	auto var_dir = variables.find("temp_dir");
+	if (var_dir != variables.end()) {
+		return var_dir->second;
 	}
 
-	auto env_base = variables.find("temp_dir_base");
-	if (env_base != variables.end()) {
-		return env_base->second + "/" + to_string(getpid());
+	auto var_base = variables.find("temp_dir_base");
+	if (var_base != variables.end()) {
+		return GetTempDirectoryFromBase(var_base->second);
 	}
 
-	// Then build from default
-	return TEMP_DIR_BASE_DEFAULT + "/" + to_string(getpid());
+	return GetTempDirectoryFromBase(TEMP_DIR_BASE_DEFAULT);
 }
 
 void TestConfiguration::MakeVariables() {
@@ -193,20 +194,26 @@ void TestConfiguration::MakeVariables() {
 	variables["BUILD_DIR"] = string(DUCKDB_BUILD_DIRECTORY);
 	variables["TEST_UUID"] = test_uuid; // NOTE: possibly later removable, seems a hook for ducklake?
 
-	// FIXME: inheritances
-	variables["DATA_DIR"] = GetDataDirectory(); // default: data
-	variables["LOCAL_DATA_DIR"] = "data";       // data unless DATA_DIR is local
-	if (/* option? || */ !FileSystem::IsRemoteFile(variables["DATA_DIR"])) {
-		variables["LOCAL_DATA_DIR"] = variables["DATA_DIR"];
+	auto data_dir = GetDataDirectory(); // default: data
+	variables["DATA_DIR"] = data_dir;   // explicitly set >> data_dir--if_local >> default=data
+	if (variables.find("LOCAL_DATA_DIR") != variables.end()) {
+		variables["LOCAL_DATA_DIR"] = FileSystem::IsRemoteFile(variables["DATA_DIR"]) ? DATA_DIR_DEFAULT : data_dir;
 	}
 
-	variables["TEMP_DIR"] = GetTempDirectory();            // default: duckdb_unittest_tempdir/$PID
-	variables["LOCAL_TEMP_DIR"] = GetLocalTempDirectory(); // duckdb_unittest_tempdir/$PID unless TEMP_DIR is local
-	if (/* option? || */ !FileSystem::IsRemoteFile(variables["TEMP_DIR"])) {
-		variables["LOCAL_TEMP_DIR"] = variables["TEMP_DIR"];
+	variables["TEMP_DIR"] = GetTempDirectory(); // default: duckdb_unittest_tempdir/$PID
+	if (variables.find("LOCAL_TEMP_DIR") == variables.end()) {
+		variables["LOCAL_TEMP_DIR"] = FileSystem::IsRemoteFile(variables["TEMP_DIR"])
+		                                  ? GetTempDirectoryFromBase(TEMP_DIR_BASE_DEFAULT)
+		                                  : variables["TEMP_DIR"];
 	}
 
 	variables["WORKING_DIR"] = working_dir; // can be overridden per runner
+
+	// XXX: debugging
+	const vector<string> vars_to_print = {"DATA_DIR", "LOCAL_DATA_DIR", "TEMP_DIR", "LOCAL_TEMP_DIR"};
+	for (auto &var : vars_to_print) {
+		std::cerr << "var[" << var << "]=" << variables[var] << std::endl;
+	}
 }
 
 string TestConfiguration::GetWorkingDirectory() {

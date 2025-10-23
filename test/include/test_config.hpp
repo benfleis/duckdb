@@ -91,7 +91,7 @@ public:
 	SelectPolicy GetPolicyForSourceREs(const vector<string> &source_lines);
 	vector<ConfigSetting> GetConfigSettings();
 	string GetDataDirectory();
-	string GetLocalTempDirectory();
+	string GetTempDirectoryFromBase(const string &base);
 	string GetTempDirectory();
 
 	static bool TestForceStorage();
