@@ -193,9 +193,18 @@ void TestConfiguration::MakeVariables() {
 	variables["BUILD_DIR"] = string(DUCKDB_BUILD_DIRECTORY);
 	variables["TEST_UUID"] = test_uuid; // NOTE: possibly later removable, seems a hook for ducklake?
 
-	variables["DATA_DIR"] = GetDataDirectory();            // default ./data
+	// FIXME: inheritances
+	variables["DATA_DIR"] = GetDataDirectory(); // default: data
+	variables["LOCAL_DATA_DIR"] = "data";       // data unless DATA_DIR is local
+	if (/* option? || */ !FileSystem::IsRemoteFile(variables["DATA_DIR"])) {
+		variables["LOCAL_DATA_DIR"] = variables["DATA_DIR"];
+	}
+
 	variables["TEMP_DIR"] = GetTempDirectory();            // default: duckdb_unittest_tempdir/$PID
-	variables["LOCAL_TEMP_DIR"] = GetLocalTempDirectory(); // default: duckdb_unittest_tempdir/$PID
+	variables["LOCAL_TEMP_DIR"] = GetLocalTempDirectory(); // duckdb_unittest_tempdir/$PID unless TEMP_DIR is local
+	if (/* option? || */ !FileSystem::IsRemoteFile(variables["TEMP_DIR"])) {
+		variables["LOCAL_TEMP_DIR"] = variables["TEMP_DIR"];
+	}
 
 	variables["WORKING_DIR"] = working_dir; // can be overridden per runner
 }
