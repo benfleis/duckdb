@@ -59,7 +59,7 @@ Unknown frame descriptor
 
 # we can read/write a ZSTD file also without the extension if we specify the compression type
 statement ok
-COPY test_zst TO '{TEMP_DIR}/noext.csv' (COMPRESSION ZSTD);
+COPY test_zst TO '{LOCAL_TEMP_DIR}/noext.csv' (COMPRESSION ZSTD);
 
 statement ok
-COPY test_zst FROM '{TEMP_DIR}/noext.csv' (COMPRESSION ZSTD);
+COPY test_zst FROM '{LOCAL_TEMP_DIR}/noext.csv' (COMPRESSION ZSTD);
