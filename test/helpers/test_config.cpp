@@ -210,11 +210,13 @@ void TestConfiguration::MakeVariables() {
 
 	variables["WORKING_DIR"] = working_dir; // can be overridden per runner
 
+#if 0
 	// XXX: debugging
 	const vector<string> vars_to_print = {"DATA_DIR", "LOCAL_DATA_DIR", "TEMP_DIR", "LOCAL_TEMP_DIR"};
 	for (auto &var : vars_to_print) {
 		std::cerr << "var[" << var << "]=" << variables[var] << std::endl;
 	}
+#endif
 }
 
 string TestConfiguration::GetWorkingDirectory() {
