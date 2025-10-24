@@ -132,12 +132,9 @@ void TestConfiguration::Finalize() {
 	// FIXME: how to manage non-local TEMP_DIR? e.g. azure module not loaded here but ideally we prep env here...
 	auto vars = {"LOCAL_TEMP_DIR" /*, "TEMP_DIR"*/};
 	for (const auto &var : vars) {
-		auto path = variables[var];
-		if (!fs.DirectoryExists(path, nullptr)) {
-			fs.CreateDirectory(path, nullptr);
-		}
+		fs.CreateDirectoriesRecursive(variables[var], nullptr);
 	}
-	TestDirectoryPath();
+	TestDirectoryPath(); // TODO: @benfleis -- remove me
 	is_finalized = true;
 }
 
