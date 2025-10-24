@@ -90,8 +90,9 @@ public:
 	SelectPolicy GetPolicyForTagSet(const vector<string> &tag_set);
 	SelectPolicy GetPolicyForSourceREs(const vector<string> &source_lines);
 	vector<ConfigSetting> GetConfigSettings();
+	string GetDataDirectoryFromWorking(); // returns "$PWD/DATA_DIR_DEFAULT"
 	string GetDataDirectory();
-	string GetTempDirectoryFromBase(const string &base);
+	string GetTempDirectoryFromBase(const string &base); // returns "base/$ISO_TS--pid=$PID"
 	string GetTempDirectory();
 
 	static bool TestForceStorage();

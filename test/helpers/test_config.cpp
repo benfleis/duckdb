@@ -141,14 +141,17 @@ void TestConfiguration::Finalize() {
 	is_finalized = true;
 }
 
+string TestConfiguration::GetDataDirectoryFromWorking() {
+	return working_dir + "/" + TestConfiguration::DATA_DIR_DEFAULT;
+}
+
 string TestConfiguration::GetDataDirectory() {
 	auto dir = options.find("data_dir");
 	if (dir != options.end()) {
 		// use as specified, including relative spec
 		return dir->second.GetValue<string>();
 	}
-	// default
-	return working_dir + "/" + TestConfiguration::DATA_DIR_DEFAULT;
+	return GetDataDirectoryFromWorking();
 }
 
 string TestConfiguration::GetTempDirectoryFromBase(const string &base) {
@@ -196,8 +199,9 @@ void TestConfiguration::MakeVariables() {
 
 	auto data_dir = GetDataDirectory(); // default: data
 	variables["DATA_DIR"] = data_dir;   // explicitly set >> data_dir--if_local >> default=data
-	if (variables.find("LOCAL_DATA_DIR") != variables.end()) {
-		variables["LOCAL_DATA_DIR"] = FileSystem::IsRemoteFile(variables["DATA_DIR"]) ? DATA_DIR_DEFAULT : data_dir;
+	if (variables.find("LOCAL_DATA_DIR") == variables.end()) {
+		variables["LOCAL_DATA_DIR"] =
+		    FileSystem::IsRemoteFile(variables["DATA_DIR"]) ? GetDataDirectoryFromWorking() : data_dir;
 	}
 
 	variables["TEMP_DIR"] = GetTempDirectory(); // default: duckdb_unittest_tempdir/$PID
