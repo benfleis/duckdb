@@ -152,10 +152,15 @@ string TestConfiguration::GetDataDirectory() {
 }
 
 string TestConfiguration::GetTempDirectoryFromBase(const string &base) {
+#if 0
 	std::time_t time = std::time({});
 	char time_str[sizeof("yyyy-mm-ddThh:mm:ssZ")];
 	std::strftime(time_str, sizeof(time_str), "%FT%TZ", std::gmtime(&time));
 	return base + "/" + time_str + "--pid-" + to_string(getpid());
+#else
+	// stay compatible with existing __TEST_DIR_- behavior
+	return base + "/" + to_string(getpid());
+#endif
 }
 
 string TestConfiguration::GetTempDirectory() {
