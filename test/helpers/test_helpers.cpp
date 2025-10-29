@@ -81,6 +81,7 @@ string TestJoinPath(string path1, string path2) {
 }
 
 void SetTestDirectory(string path) {
+	std::cerr << "- SetTestDirectory:" << path << std::endl;
 	custom_test_directory = path;
 }
 

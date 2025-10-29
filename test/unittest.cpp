@@ -40,6 +40,7 @@ int main(int argc_in, char *argv[]) {
 				        test_dir.c_str());
 				return 1;
 			}
+			std::cerr << "- --test-temp-dir:" << test_dir << std::endl;
 			SetTestDirectory(test_dir);
 		} else if (argument == "--require") {
 			AddRequire(string(argv[++i]));
