@@ -10,6 +10,7 @@
 using namespace duckdb;
 
 int main(int argc_in, char *argv[]) {
+	std::cerr << "main: in" << std::endl;
 	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
 	string test_directory = DUCKDB_ROOT_DIRECTORY;
 

@@ -133,6 +133,7 @@ void TestConfiguration::Finalize() {
 	// extensions/credentials, and in practice with S3/Azure Blob it wno't matter.
 	auto vars = {"LOCAL_TEMP_DIR" /*, "TEMP_DIR"*/};
 	for (const auto &var : vars) {
+		std::cerr << "- mkdir -p: " << variables[var] << std::endl;
 		fs.CreateDirectoriesRecursive(variables[var], nullptr);
 	}
 	TestDirectoryPath(); // NOTE: (@benfleis) - remove after __TEST_DIR__ and sibs gone
