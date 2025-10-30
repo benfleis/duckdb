@@ -110,7 +110,7 @@ jobs:
     # XXX: debugging
     - name: Setup tmate session
       uses: mxschmitt/action-tmate@v3
-      timeout-minutes: 120
+      # timeout-minutes: 120
 
     - name: Test
       shell: bash
