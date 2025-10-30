@@ -498,8 +498,10 @@ void FileSystem::CreateDirectoriesRecursive(const string &path, optional_ptr<Fil
 	}
 
 	// Create the directories one by one
+	std::cerr << "- creating... " << current_prefix << std::endl;
 	for (vector<string>::reverse_iterator riter = dirs_to_create.rbegin(); riter != dirs_to_create.rend(); ++riter) {
 		current_prefix += *riter;
+		std::cerr << "- create: " << current_prefix << std::endl;
 		CreateDirectory(current_prefix);
 	}
 }
