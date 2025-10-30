@@ -470,6 +470,7 @@ void FileSystem::CreateDirectoriesRecursive(const string &path, optional_ptr<Fil
 	// we construct the list of directories to be created depth-first. This avoids calling DirectoryExists on a parent
 	// dir that is not in the allowed_directories list
 
+	std::cerr << "CreateDirectoriesRecursive: " << path << " opener=" << bool(opener) << std::endl;
 	auto sep = PathSeparator(path);
 	vector<string> dirs_to_create;
 
@@ -484,6 +485,7 @@ void FileSystem::CreateDirectoriesRecursive(const string &path, optional_ptr<Fil
 		// Push back the root dir
 		if (found == string::npos || found == 0) {
 			dirs_to_create.push_back(current_prefix);
+			std::cerr << "- to create: " << current_prefix << std::endl;
 			current_prefix = "";
 			break;
 		}

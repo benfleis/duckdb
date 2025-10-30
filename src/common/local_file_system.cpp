@@ -624,6 +624,7 @@ bool LocalFileSystem::DirectoryExists(const string &directory, optional_ptr<File
 void LocalFileSystem::CreateDirectory(const string &directory, optional_ptr<FileOpener> opener) {
 	struct stat st;
 
+	std::cerr << "CreateDirectory: " << directory << std::endl;
 	auto normalized_dir = NormalizeLocalPath(directory);
 	if (stat(normalized_dir, &st) != 0) {
 		/* Directory does not exist. EEXIST for race condition */
