@@ -13,6 +13,7 @@ int main(int argc_in, char *argv[]) {
 	std::cerr << "main: in" << std::endl;
 	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
 	string test_directory = DUCKDB_ROOT_DIRECTORY;
+	std::cerr << "test_directory (wd): " << test_directory << std::endl;
 
 	auto &test_config = TestConfiguration::Get();
 	test_config.Initialize();
@@ -41,7 +42,7 @@ int main(int argc_in, char *argv[]) {
 				        test_dir.c_str());
 				return 1;
 			}
-			std::cerr << "- --test-temp-dir:" << test_dir << std::endl;
+			std::cerr << "test_dir (temp): " << test_dir << std::endl;
 			SetTestDirectory(test_dir);
 		} else if (argument == "--require") {
 			AddRequire(string(argv[++i]));
