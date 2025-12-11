@@ -1,0 +1,4 @@
+az_storage_account: &account duckdblabstestdatablob
+az_data_root: common/azure_data
+az_data_dir: &data_dir az://duckdblabs-data/common/azure_data
+az_temp_dir: &temp_base az://duckdblabs-write-testing/extension/azure

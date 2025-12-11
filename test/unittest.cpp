@@ -1,13 +1,35 @@
+#include <memory>
 #define CATCH_CONFIG_RUNNER
 #include "catch.hpp"
 
+#include <mustache.hpp>
+#include <yaml-cpp/yaml.h>
+
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/helper.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "sqlite/sqllogic_test_logger.hpp"
 #include "test_helpers.hpp"
 #include "test_config.hpp"
 
 using namespace duckdb;
+
+using kainjow::mustache::data;
+
+namespace duckdb {
+shared_ptr<data> ctx = make_shared_ptr<data>();
+}
+
+static shared_ptr<data> parse_yaml(const string &yaml_src) {
+	YAML::Node config = YAML::LoadFile(yaml_src);
+	assert(config.IsMap());
+	for (const auto &kv : config) {
+		auto key = kv.first.as<std::string>();    // string
+		auto value = kv.second.as<std::string>(); // unknown type
+		ctx->set(key, value);
+	}
+	return ctx;
+}
 
 int main(int argc_in, char *argv[]) {
 	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
@@ -34,6 +56,9 @@ int main(int argc_in, char *argv[]) {
 			SetTestDirectory(test_dir);
 		} else if (argument == "--require") {
 			AddRequire(string(argv[++i]));
+		} else if (argument == "--config") {
+			auto yaml_src = string(argv[++i]);
+			parse_yaml(yaml_src);
 		} else if (!test_config.ParseArgument(argument, argc, argv, i)) {
 			new_argv[new_argc] = argv[i];
 			new_argc++;

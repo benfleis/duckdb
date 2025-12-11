@@ -1,12 +1,13 @@
 #include "catch.hpp"
 #include "duckdb.hpp"
+#include "duckdb/common/helper.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/extension/generated_extension_loader.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "sqllogic_test_runner.hpp"
 #include "test_helpers.hpp"
 #include "test_config.hpp"
-
+#include "mustache.hpp"
 #include <functional>
 #include <string>
 #include <system_error>
@@ -14,6 +15,8 @@
 
 using namespace duckdb;
 using namespace std;
+
+extern duckdb::shared_ptr<kainjow::mustache::data> ctx;
 
 // code below traverses the test directory and makes individual test cases out
 // of each script
@@ -41,7 +44,6 @@ static void testRunner() {
 	const auto name = Catch::getResultCapture().getCurrentTestName();
 	const auto test_dir_path = TestDirectoryPath(); // can vary between tests, and does IO
 	auto &test_config = TestConfiguration::Get();
-
 	string initial_dbpath = test_config.GetInitialDBPath();
 	test_config.ProcessPath(initial_dbpath, name);
 	if (!initial_dbpath.empty()) {

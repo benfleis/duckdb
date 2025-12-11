@@ -2,7 +2,9 @@
 #include "sqllogic_test_runner.hpp"
 
 #include "catch.hpp"
+#include "mustache.hpp"
 #include "duckdb/common/file_open_flags.hpp"
+#include "duckdb/common/helper.hpp"
 #include "duckdb/common/virtual_file_system.hpp"
 #include "duckdb/main/extension/generated_extension_loader.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -18,6 +20,8 @@
 #endif
 
 namespace duckdb {
+
+extern shared_ptr<kainjow::mustache::data> ctx;
 
 SQLLogicTestRunner::SQLLogicTestRunner(string dbpath) : dbpath(std::move(dbpath)), finished_processing_file(false) {
 	config = GetTestConfig();
@@ -766,6 +770,11 @@ void SQLLogicTestRunner::ExecuteFile(string script) {
 
 	/* Loop over all records in the file */
 	while (parser.NextStatement()) {
+		kainjow::mustache::mustache try_replace = parser.lines[parser.current_line];
+		if (try_replace.is_valid()) {
+			// {"azure_requires", "require-env AZURE_AUTH_ENV 1"}
+			parser.lines[parser.current_line] = try_replace.render(*ctx);
+		}
 		// tokenize the current line
 		auto token = parser.Tokenize();
 

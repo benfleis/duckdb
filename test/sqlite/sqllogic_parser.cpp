@@ -1,5 +1,7 @@
 #include "sqllogic_parser.hpp"
 #include "catch.hpp"
+#include "mustache.hpp"
+#include <sstream>
 
 #include <fstream>
 
@@ -12,7 +14,6 @@ bool SQLLogicParser::OpenFile(const string &path) {
 	if (infile.bad() || infile.fail()) {
 		return false;
 	}
-
 	string line;
 	while (std::getline(infile, line)) {
 		lines.push_back(StringUtil::Replace(line, "\r", ""));
