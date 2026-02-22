@@ -329,9 +329,9 @@ static size_t ParseFilePathTail(const string &input, size_t start, struct Path &
 #if defined(_WIN32)
 //
 // UNC Scheme as we handle it:
-// - scheme = \\
+// - scheme = "\\"
 // - authority = server\share
-// - anchor = \
+// - anchor = "\"
 // - path = < the rest >
 //
 static size_t ParseUNCScheme(const string &input, struct Path &parsed) {
