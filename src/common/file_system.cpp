@@ -1238,6 +1238,7 @@ bool FileSystem::IsRemoteFile(const string &path, string &extension) {
 }
 
 string FileSystem::CanonicalizePath(const string &path_p, optional_ptr<FileOpener> opener) {
+	// TODO: @benfleis - integrate this properly with Path (needs additional work)
 	if (IsRemoteFile(path_p) || !Path::FromString(path_p).IsLocal()) {
 		// don't canonicalize remote paths
 		return path_p;

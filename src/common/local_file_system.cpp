@@ -813,6 +813,7 @@ bool LocalFileSystem::IsPathAbsolute(const string &path) {
 
 string LocalFileSystem::MakePathAbsolute(const string &path_p, optional_ptr<FileOpener> opener) {
 	auto path = ExpandPath(path_p, opener);
+	// TODO: @benfleis - integrate this properly with Path (needs additional work)
 	auto parsed = Path::FromString(path);
 	if (!parsed.IsAbsolute() && !IsPathAbsolute(path)) {
 		// path is not absolute - join with working directory
