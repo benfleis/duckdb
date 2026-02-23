@@ -148,117 +148,6 @@ TEST_CASE("Make sure file system operators work as advertised", "[file_system]")
 	REQUIRE(!fs->FileExists(fname_in_dir2));
 }
 
-TEST_CASE("JoinPath normalizes separators and dot segments", "[file_system]") {
-	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	auto sep = fs->PathSeparator("dummy");
-	auto collapse = [&](const string &path) {
-		return StringUtil::Replace(path, "/", sep);
-	};
-
-	auto normalized = fs->JoinPath("dir//subdir/", "./file");
-	CHECK(normalized == collapse("dir/subdir/file"));
-
-	auto parent = fs->JoinPath("dir/subdir", "../sibling");
-	CHECK(parent == collapse("dir/sibling"));
-
-	CHECK_THROWS(fs->JoinPath("dir", "/abs/path"));
-
-	auto dedup = fs->JoinPath("dir///", "nested///child");
-	CHECK(dedup == collapse("dir/nested/child"));
-
-	auto zero_rel = fs->JoinPath("foo/bar", "../..");
-	CHECK(zero_rel == fs->ConvertSeparators("."));
-}
-
-TEST_CASE("JoinPath handles edge cases", "[file_system]") {
-	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	auto sep = fs->PathSeparator("dummy");
-	auto collapse = [&](const string &path) {
-		return StringUtil::Replace(path, "/", sep);
-	};
-
-	auto lhs_parent = fs->JoinPath("dir/subdir/..", "sibling");
-	CHECK(lhs_parent == collapse("dir/sibling"));
-
-	auto mixed_dots = fs->JoinPath("./dir/./subdir/./..", "./sibling/.");
-	CHECK(mixed_dots == collapse("dir/sibling"));
-
-	auto overflowing_rel = fs->JoinPath("dir/..", "../..");
-	CHECK(overflowing_rel == fs->ConvertSeparators("../.."));
-
-	auto walk_up_absolute = fs->JoinPath("/usr/local", "../..");
-	CHECK(walk_up_absolute == fs->ConvertSeparators("/"));
-
-	auto root_child = fs->JoinPath("/", "usr/local");
-	CHECK(root_child == fs->ConvertSeparators("/usr/local"));
-
-	auto past_root = fs->JoinPath("/usr/local", "../../..");
-	CHECK(past_root == fs->ConvertSeparators("/"));
-
-	auto file1_join = fs->JoinPath("file:/usr/local", "../bin");
-	CHECK(file1_join == "file:/usr/bin");
-
-	auto file2_join = fs->JoinPath("file://localhost/usr/local", "../bin");
-	CHECK(file2_join == "file://localhost/usr/bin");
-
-	auto file3_join = fs->JoinPath("file:///usr/local", "../bin");
-	CHECK(file3_join == "file:///usr/bin");
-
-	auto s3_join = fs->JoinPath("s3://foo", "bar/baz");
-	CHECK(s3_join == "s3://foo/bar/baz");
-
-	auto s3_parent = fs->JoinPath("s3://foo", "..");
-	CHECK(s3_parent == "s3://foo/");
-
-	auto s3_parent_twice = fs->JoinPath("s3://foo", "../..");
-	CHECK(s3_parent_twice == "s3://foo/");
-
-	CHECK_THROWS(fs->JoinPath("s3://foo", "az://foo"));
-	CHECK_THROWS(fs->JoinPath("s3://foo", "/foo/bar/baz"));
-
-	auto absolute_child = fs->JoinPath("/usr/local", "/usr/local/bin");
-	CHECK(absolute_child == fs->ConvertSeparators("/usr/local/bin"));
-
-	CHECK_THROWS(fs->JoinPath("/usr/local", "/var/log"));
-
-	auto scheme_like_embed = fs->JoinPath("/foo/proto://bar", "a");
-	CHECK(scheme_like_embed == fs->ConvertSeparators("/foo/proto:/bar/a"));
-
-#ifdef _WIN32
-	auto clamp_drive_root = fs->JoinPath(R"(C:\)", R"(..)");
-	CHECK(clamp_drive_root == fs->ConvertSeparators("C:/"));
-
-	auto clamp_drive_root_twice = fs->JoinPath(R"(C:\)", R"(..\..)");
-	CHECK(clamp_drive_root_twice == fs->ConvertSeparators("C:/"));
-
-	auto drive_absolute_child = fs->JoinPath(R"(C:\)", "system32");
-	CHECK(drive_absolute_child == fs->ConvertSeparators("C:/system32"));
-
-	auto drive_relative = fs->JoinPath("C:", "system32");
-	CHECK(drive_relative == fs->ConvertSeparators("C:system32"));
-
-	auto drive_relative_child = fs->JoinPath("C:drive_relative_path", "path");
-	CHECK(drive_relative_child == fs->ConvertSeparators("C:drive_relative_path/path"));
-
-	auto drive_relative_parent = fs->JoinPath("C:drive_relative_path", R"(..\path)");
-	CHECK(drive_relative_parent == "C:path");
-
-	auto unc_path = fs->JoinPath(R"(\\server\share)", R"(child)");
-	CHECK(unc_path == fs->ConvertSeparators(R"(\\server\share\child)"));
-
-	auto unc_long_path = fs->JoinPath(R"(\\?\UNC\server\share)", R"(nested\dir)");
-	CHECK(unc_long_path == fs->ConvertSeparators(R"(\\?\UNC\server\share\nested\dir)"));
-
-	auto long_drive_path = fs->JoinPath(R"(\\?\C:\base)", R"(folder)");
-	CHECK(long_drive_path == fs->ConvertSeparators(R"(\\?\C:\base\folder)"));
-
-	auto ci_prefix = fs->JoinPath(R"(C:\Data)", R"(C:\data\file)");
-	CHECK(ci_prefix == fs->ConvertSeparators(R"(C:\data\file)"));
-
-	CHECK_THROWS(fs->JoinPath(R"(C:\\foo)", R"(D:\\bar)"));
-#endif
-}
-
 // note: the integer count is chosen as 512 so that we write 512*8=4096 bytes to the file
 // this is required for the Direct-IO as on Windows Direct-IO can only write multiples of sector sizes
 // sector sizes are typically one of [512/1024/2048/4096] bytes, hence a 4096 bytes write succeeds.
@@ -590,7 +479,7 @@ TEST_CASE("filesystem concurrent access and deletion", "[file_system]") {
 }
 
 // ------------------------------------------------------------------------------------------------
-// Path struct tests (ported from playground/test-playground.cpp)
+// Path struct tests
 // ------------------------------------------------------------------------------------------------
 
 TEST_CASE("Path parses and correctly structures fields", "[file_system]") {
@@ -853,6 +742,9 @@ TEST_CASE("Path::JoinPath table-based tests", "[file_system]") {
 
 		    make_tuple(ERR, "dir", "/abs/path", ""),
 		    make_tuple(ERR, "/fo",  "/foobar",  ""),
+
+		    // scheme-like token embedded after leading slash is treated as path, not scheme
+		    make_tuple(OK_, "/foo/proto://bar", "a", "/foo/proto:/bar/a"),
 		}));
 	}
 
@@ -865,8 +757,9 @@ TEST_CASE("Path::JoinPath table-based tests", "[file_system]") {
 		    make_tuple(OK_, "file:/usr", "bin",             "file:/usr/bin"),
 		    make_tuple(OK_, "file:/usr/local", "../bin",    "file:/usr/bin"),
 
-		    make_tuple(OK_, "file://localhost/usr", "../bin", "file://localhost/bin"),
-		    make_tuple(OK_, "file:///usr/local", "../bin",    "file:///usr/bin"),
+		    make_tuple(OK_, "file://localhost/usr", "../bin",       "file://localhost/bin"),
+		    make_tuple(OK_, "file://localhost/usr/local", "../bin", "file://localhost/usr/bin"),
+		    make_tuple(OK_, "file:///usr/local", "../bin",          "file:///usr/bin"),
 
 		    make_tuple(OK_, "s3://host", "bar/baz", "s3://host/bar/baz"),
 		    make_tuple(OK_, "s3://host", "..",      "s3://host/"),
@@ -881,7 +774,7 @@ TEST_CASE("Path::JoinPath table-based tests", "[file_system]") {
 		    make_tuple(ERR, "s3://bucket/FOO", "s3://bucket/foo/bar", ""),
 
 		    // sub-path joins
-		    make_tuple(OK_, "file:/usr",            "file:/usr/local",            "file:/usr/local"),
+		    make_tuple(OK_, "file:/usr",             "file:/usr/local",            "file:/usr/local"),
 		    make_tuple(OK_, "file://localhost/usr",  "file://localhost/usr/local", "file://localhost/usr/local"),
 		    make_tuple(OK_, "file:///usr",           "file:///usr/local",          "file:///usr/local"),
 		    make_tuple(OK_, "s3://bucket/a",         "s3://bucket/a/b",            "s3://bucket/a/b"),
