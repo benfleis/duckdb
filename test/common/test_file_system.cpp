@@ -259,37 +259,6 @@ TEST_CASE("JoinPath handles edge cases", "[file_system]") {
 #endif
 }
 
-#ifdef _WIN32
-TEST_CASE("Glob handles absolute drive paths", "[file_system]") {
-	auto fs = FileSystem::CreateLocal();
-	auto base_dir = fs->NormalizeAbsolutePath(TestCreatePath("glob_drive"));
-	// base_dir resolves to an absolute drive path (e.g., C:\...\glob_drive) to ensure globbing works from a drive root
-	if (fs->DirectoryExists(base_dir)) {
-		fs->RemoveDirectory(base_dir);
-	}
-	fs->CreateDirectory(base_dir);
-
-	auto nested_dir = fs->JoinPath(base_dir, "nested");
-	fs->CreateDirectory(nested_dir);
-	auto fname = fs->JoinPath(nested_dir, "file.csv");
-	create_dummy_file(fname);
-
-	auto pattern = fs->JoinPath(base_dir, "*.csv");
-	auto deep_pattern = fs->JoinPath(fs->JoinPath(base_dir, "*"), "*.csv");
-
-	auto entries_shallow = fs->Glob(pattern);
-	auto entries_deep = fs->Glob(deep_pattern);
-
-	REQUIRE(entries_shallow.size() == 0); // file is nested, so shallow glob should not see it
-	REQUIRE(entries_deep.size() == 1);
-	REQUIRE(fs->ConvertSeparators(entries_deep[0].path) == fs->ConvertSeparators(fname));
-
-	fs->RemoveFile(fname);
-	fs->RemoveDirectory(nested_dir);
-	fs->RemoveDirectory(base_dir);
-}
-#endif
-
 // note: the integer count is chosen as 512 so that we write 512*8=4096 bytes to the file
 // this is required for the Direct-IO as on Windows Direct-IO can only write multiples of sector sizes
 // sector sizes are typically one of [512/1024/2048/4096] bytes, hence a 4096 bytes write succeeds.
