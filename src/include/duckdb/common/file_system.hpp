@@ -135,6 +135,7 @@ public:
 	shared_ptr<Logger> logger;
 };
 
+//
 // Parsed representation of a path string, covering posix, windows, URI, and UNC forms.
 //
 // FromString(raw) parses and normalizes the input; ToString() reconstructs it as
@@ -160,6 +161,9 @@ public:
 //   "\\server\share\p" (win)      "\\"          "server\share" "\"      "p"           true
 //   "\\?\UNC\server\share" (win)  "\\?\UNC\"    "server\share" "\"      ""            true
 //   "\\?\C:\foo" (win)            "\\?"         ""             "C:\"    "foo"         true
+//
+// Windows local paths may use '/' or '\\' -- whichever is found first will be applied to
+// remainder of the normalized path; defaults to '/'.
 //
 struct Path {
 	string scheme;           // e.g. "s3://", "file://", "" — normalized lowercase
