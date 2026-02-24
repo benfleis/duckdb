@@ -175,7 +175,9 @@ struct Path {
 
 	static Path FromString(const string &raw);
 	string ToString() const;
-	string GetPath() const; // join(segments, sep), or "." for empty relative
+
+	string GetBase() const; // scheme + authority + anchor
+	string GetPath() const; // relative path segments: join(segments, sep), or "." for empty relative
 
 	Path Join(const Path &rhs) const;
 	Path Join(const string &rhs) const;
@@ -197,10 +199,15 @@ struct Path {
 		return is_absolute;
 	}
 
-	// true for /* c:/* (not c:foo) file:/* \\?\C:\*
+	// true for all relative paths, /*,  c:/* (not c:foo), file:/*, \\?\C:\*
 	bool IsLocal() const {
+		// note: HasDrive() covers UNC locals too!
 		return (!IsAbsolute() || !HasScheme() || HasDrive() || StringUtil::StartsWith(scheme, "file:"));
 	};
+
+	bool IsRemote() const {
+		return !IsLocal();
+	}
 
 	const vector<string> &GetPathSegments() const {
 		return segments;

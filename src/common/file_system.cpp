@@ -450,6 +450,10 @@ string Path::ToString() const {
 	return result;
 }
 
+string Path::GetBase() const {
+	return scheme + authority + anchor;
+}
+
 string Path::GetPath() const {
 	if (segments.empty()) {
 		return (scheme.empty() && anchor.empty()) ? "." : "";
@@ -502,6 +506,7 @@ bool Path::HasDrive() const {
 char Path::GetDriveChar() const {
 	const auto size = anchor.size();
 	D_ASSERT(size <= 4);
+	// must be one of {"C:", "C:\" or "\C:", "\C:\"}; switch on size & ':'
 	if (size == 2) {
 		return anchor[0];
 	} else if (size == 3) {
@@ -538,7 +543,7 @@ void Path::NormalizeSegments(const string &raw, size_t path_offset) {
 	SegmentAndNormalizePath(raw.begin() + static_cast<string::difference_type>(path_offset), raw.end(), raw_segs);
 	segments.clear();
 	for (auto &seg : raw_segs) {
-		if (is_absolute && segments.empty() && seg == "..") {
+		if (IsAbsolute() && segments.empty() && seg == "..") {
 			continue; // drop leading ".." on absolute paths (can't go above root)
 		}
 		segments.push_back(std::move(seg));
@@ -562,7 +567,7 @@ Path Path::Join(const Path &rhs) const {
 	const auto seg_prefix = (rhs.segments.size() >= lhs.segments.size() &&
 	                         std::equal(lhs.segments.begin(), lhs.segments.end(), rhs.segments.begin()));
 #endif
-	if (!rhs.is_absolute && !rhs.HasDrive()) {
+	if (!rhs.IsAbsolute() && !rhs.HasDrive()) {
 		lhs.segments.insert(lhs.segments.end(), rhs.segments.begin(), rhs.segments.end());
 		vector<string> result;
 		result.reserve(lhs.segments.size());
@@ -573,7 +578,7 @@ Path Path::Join(const Path &rhs) const {
 				result.push_back(std::move(seg));
 			}
 		}
-		while (lhs.is_absolute && !result.empty() && result.front() == "..") {
+		while (lhs.IsAbsolute() && !result.empty() && result.front() == "..") {
 			result.erase(result.begin());
 		}
 		lhs.segments = std::move(result);

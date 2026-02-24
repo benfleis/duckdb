@@ -826,3 +826,44 @@ TEST_CASE("Path::JoinPath table-based tests", "[file_system]") {
 		CHECK_THROWS(do_join(lhs, rhs));
 	}
 }
+
+TEST_CASE("Path::IsAbsolute + IsLocal", "[file_system]") {
+	using std::make_tuple;
+
+	std::string input;
+	bool is_absolute_exp, is_local_exp;
+	enum AbsType { REL = false, ABS = true };
+	enum LocalTypeType { REMOTE = false, LOCAL_ = true };
+
+	// clang-format off
+	SECTION("posix and URI") {
+		std::tie(input, is_absolute_exp, is_local_exp) = GENERATE(table<std::string, bool, bool>({
+		    make_tuple("",                    REL, LOCAL_),
+		    make_tuple("a/b",                 REL, LOCAL_),
+		    make_tuple("/",                   ABS, LOCAL_),
+		    make_tuple("/a/b",                ABS, LOCAL_),
+		    make_tuple("file:/a/b",           ABS, LOCAL_),
+		    make_tuple("file:///a/b",         ABS, LOCAL_),
+		    make_tuple("s3://bucket/foo",     ABS, REMOTE),
+		    make_tuple("az://container/foo",  ABS, REMOTE),
+		    make_tuple("http://host/path",    ABS, REMOTE),
+		}));
+	}
+
+#if defined(_WIN32)
+	SECTION("windows") {
+		std::tie(input, is_absolute_exp, is_local_exp) = GENERATE(table<std::string, bool, bool>({
+		    make_tuple(R"(C:\foo)",          ABS, LOCAL_),
+		    make_tuple(R"(C:foo)",           REL, LOCAL_),
+		    make_tuple(R"(\\server\share)",  ABS, REMOTE),
+		    make_tuple(R"(\\?\C:\foo)",      ABS, LOCAL_),
+		}));
+	}
+#endif
+	// clang-format on
+
+	CAPTURE(input);
+	auto p = Path::FromString(input);
+	CHECK(p.IsAbsolute() == is_absolute_exp);
+	CHECK(p.IsLocal() == is_local_exp);
+}
