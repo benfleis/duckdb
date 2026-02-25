@@ -104,6 +104,9 @@ jobs:
       shell: bash
       run: echo $DUCKDB_INSTALL_LIB
 
+    - name: Setup tmate session
+      uses: mxschmitt/action-tmate@v3
+
     - name: Test
       shell: bash
       if: ${{ inputs.skip_tests != 'true' }}
