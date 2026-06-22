@@ -276,6 +276,34 @@ def pytest_collection_modifyitems(session, config, items):
 
 
 # ---------------------------------------------------------------------------
+# Terminal summary: aggregate skip reasons across the whole run
+# ---------------------------------------------------------------------------
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Consolidate per-test skip reasons into one counted digest for the run.
+
+    pytest's -rs lists every skipped test individually; for a big suite this groups
+    them by reason (exact match) so a missing env var / extension is obvious at a glance.
+    """
+    from collections import Counter
+
+    skipped = terminalreporter.stats.get("skipped", [])
+    if not skipped:
+        return
+    counts = Counter()
+    for rep in skipped:
+        longrepr = getattr(rep, "longrepr", None)
+        reason = longrepr[2] if isinstance(longrepr, tuple) else str(longrepr)
+        counts[reason.removeprefix("Skipped: ")] += 1
+
+    # yellow to match pytest's own skip coloring (markup is honored per --color)
+    terminalreporter.write_sep("-", f"skipped: {len(skipped)} by reason", yellow=True, bold=True)
+    for reason, n in counts.most_common():
+        terminalreporter.write_line(f"  {n:>4}  {reason}", yellow=True)
+
+
+# ---------------------------------------------------------------------------
 # Batch execution
 # ---------------------------------------------------------------------------
 
@@ -303,9 +331,14 @@ def _execute_batch(test_names: list, binary: str, working_dir: str) -> dict:
         os.unlink(tmpfile)
 
     if result.get("returncode", 1) == 0:
-        # All passed (skips indistinguishable from passes at batch level;
-        # use --batch-size 1 for per-test skip attribution).
-        return {name: {"status": "pass"} for name in test_names}
+        # Batch succeeded. Skips are still attributable per-test via the
+        # [DUCKDB_SKIP] markers the binary emits (one per skipped test).
+        skips = _scan_batch_skips(result["stdout"] + result["stderr"])
+        return {
+            name: ({"status": "skip", "reason": skips[name]} if name in skips
+                   else {"status": "pass"})
+            for name in test_names
+        }
 
     # Re-run individually so each item gets an accurate result.
     return {name: _invoke_single(name, binary, working_dir) for name in test_names}
@@ -343,13 +376,21 @@ def _invoke(binary: str, args: list, working_dir: str) -> dict:
     }
 
 
+# Stable marker the unittest binary emits per skipped test (SQLLogicTestLogger::PrintSkip):
+#   [DUCKDB_SKIP] <test_name> :: <reason>
+_SKIP_MARKER = "[DUCKDB_SKIP]"
+
+
 def _parse_result(result: dict) -> dict:
     """Classify a single-test invocation result as pass / skip / fail."""
-    if result["returncode"] != 0:
-        return {"status": "fail", "output": result["stdout"] + result["stderr"]}
     combined = result["stdout"] + result["stderr"]
-    if "tests were skipped" in combined:
-        return {"status": "skip", "reason": _extract_skip_reason(combined)}
+    # The skip marker is authoritative (a skipped run still exits 0, but check it
+    # first so it wins regardless of exit code).
+    skips = _scan_batch_skips(combined)
+    if skips:
+        return {"status": "skip", "reason": next(iter(skips.values()))}
+    if result["returncode"] != 0:
+        return {"status": "fail", "output": combined}
     return {"status": "pass"}
 
 
@@ -378,11 +419,21 @@ class SqlLogicFailure(Exception):
     pass
 
 
-def _extract_skip_reason(output: str) -> str:
+def _scan_batch_skips(output: str) -> dict:
+    """Map test_name -> reason for every [DUCKDB_SKIP] marker in (batch) output.
+
+    Because the binary emits one marker per skipped test, this attributes skips
+    per-test even inside a single batched invocation.
+    """
+    skips = {}
     for line in output.splitlines():
-        s = line.strip()
-        if s.startswith(("require-env ", "require ")):
-            return s
-        if "skipped" in s.lower() and s:
-            return s
-    return "skipped"
+        idx = line.find(_SKIP_MARKER)
+        if idx == -1:
+            continue
+        rest = line[idx + len(_SKIP_MARKER):].strip()
+        if " :: " in rest:
+            name, reason = rest.split(" :: ", 1)
+            skips[name.strip()] = reason.strip() or "skipped"
+        elif rest:
+            skips[rest] = "skipped"
+    return skips

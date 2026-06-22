@@ -36,6 +36,14 @@ void SQLLogicTestLogger::LogFailureAnnotation(const string &log_message) {
 	Log(prefix, log_message);
 }
 
+void SQLLogicTestLogger::PrintSkip(const string &file_name, const string &reason) {
+	// Stable, uncolored marker consumed by the pytest collector. Emitted to std::cerr
+	// (which survives subprocess capture) per skipped test, so skips are attributable
+	// even inside a batched invocation. Plain text on purpose: pytest applies its own
+	// skip color; ANSI codes here would only complicate parsing.
+	std::cerr << "[DUCKDB_SKIP] " << file_name << " :: " << reason << "\n";
+}
+
 void SQLLogicTestLogger::PrintSummaryHeader(const std::string &file_name, idx_t query_line) {
 	auto failures_count = to_string(FailureSummary::GetSummaryCounter());
 	if (std::getenv("NO_DUPLICATING_HEADERS") == 0) {

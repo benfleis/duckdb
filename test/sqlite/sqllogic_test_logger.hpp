@@ -31,6 +31,8 @@ public:
 	void PrintSQLFormatted();
 	void PrintErrorHeader(const string &description);
 	static void PrintErrorHeader(const string &file_name, idx_t query_line, const string &description);
+	// emits a stable, uncolored marker line consumed by the pytest collector
+	static void PrintSkip(const string &file_name, const string &reason);
 	void PrintResultError(const vector<string> &result_values, const vector<string> &values,
 	                      idx_t expected_column_count, bool row_wise);
 	static void PrintSummaryHeader(const std::string &file_name, idx_t query_line);
