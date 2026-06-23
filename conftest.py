@@ -6,21 +6,28 @@ import sys
 
 import pytest
 
-sys.path.insert(
-    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "test", "pytest")
-)
-# Rewrite sqllogic's asserts before it is first imported, so registering it as a
-# plugin (below) doesn't warn about lost assertion rewriting.
-pytest.register_assert_rewrite("sqllogic")
-from sqllogic import register_options, find_binary, SqlLogicFile
-from sqllogic import has_driver, is_driver
+# Anchor on the EXTENSION root. abspath (never realpath): when this conftest is a
+# symlink into an extension, __file__ stays the symlink path, so test/py + scripts
+# resolve to the extension's own dirs — not the SoT this file points at.
+_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# Register sqllogic as a plugin so ALL its pytest_* hooks fire automatically
-# (pytest_collection_modifyitems, pytest_terminal_summary, future ones) — no
-# per-hook re-export.
-pytest_plugins = ["sqllogic"]
+# Make the driver framework, repo helpers, and generators importable. Conventional
+# roots; isdir-guarded so missing ones are harmless across extensions.
+for _sub in ("test/py", "scripts", "scripts/data_generator"):
+    _p = os.path.join(_ROOT, _sub)
+    if os.path.isdir(_p) and _p not in sys.path:
+        sys.path.insert(0, _p)
 
-_WORKING_DIR = os.path.dirname(os.path.abspath(__file__))
+# Rewrite the plugin module's asserts before it is first imported (below), so
+# registering it as a plugin doesn't warn about lost assertion rewriting.
+pytest.register_assert_rewrite("driver.sqllogic")
+from driver import register_options, find_binary, SqlLogicFile, has_driver, is_driver
+
+# Register the framework as a plugin so ALL its pytest_* hooks fire automatically
+# (pytest_collection_modifyitems, pytest_terminal_summary, …) — no per-hook re-export.
+pytest_plugins = ["driver.sqllogic"]
+
+_WORKING_DIR = _ROOT
 _TEST_ROOT = os.path.join(_WORKING_DIR, "test")
 
 collect_ignore = ["duckdb", "build"]

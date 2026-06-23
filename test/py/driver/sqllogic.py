@@ -53,7 +53,7 @@ import threading
 
 import pytest
 
-from mnemonic import run_id as _make_run_id
+from .mnemonic import run_id as _make_run_id
 
 # ---------------------------------------------------------------------------
 # Per-process batch cache (coherent within a worker; xdist_group keeps a
