@@ -12,6 +12,7 @@ using namespace duckdb;
 int main(int argc_in, char *argv[]) {
 	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
 	string test_directory = DUCKDB_ROOT_DIRECTORY;
+	bool external_test_dir = false;
 
 	auto &test_config = TestConfiguration::Get();
 	test_config.Initialize();
@@ -32,6 +33,12 @@ int main(int argc_in, char *argv[]) {
 				return 1;
 			}
 			SetTestDirectory(test_dir);
+		} else if (argument == "--external-test-dir") {
+			// caller-owned base dir: TEST_DIR becomes <base>/<random> per invocation. Never wiped or
+			// deleted; the per-invocation subdir is created only when the base is a local filesystem.
+			SetDeleteTestPath(false);
+			external_test_dir = true;
+			SetTestDirBase(string(argv[++i]));
 		} else if (argument == "--require") {
 			AddRequire(string(argv[++i]));
 		} else if (!test_config.ParseArgument(argument, argc, argv, i)) {
@@ -41,15 +48,17 @@ int main(int argc_in, char *argv[]) {
 	}
 	test_config.ChangeWorkingDirectory(test_directory);
 
-	// delete the testing directory if it exists
+	// reset the testing directory to an empty state, unless the caller owns it externally
 	auto dir = TestCreatePath("");
-	try {
-		TestDeleteDirectory(dir);
-		// create the empty testing directory
-		TestCreateDirectory(dir);
-	} catch (std::exception &ex) {
-		fprintf(stderr, "Failed to create testing directory \"%s\": %s\n", dir.c_str(), ex.what());
-		return 1;
+	if (!external_test_dir) {
+		try {
+			TestDeleteDirectory(dir);
+			// create the empty testing directory
+			TestCreateDirectory(dir);
+		} catch (std::exception &ex) {
+			fprintf(stderr, "Failed to create testing directory \"%s\": %s\n", dir.c_str(), ex.what());
+			return 1;
+		}
 	}
 
 	if (test_config.GetSkipCompiledTests()) {

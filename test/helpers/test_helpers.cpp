@@ -2,6 +2,7 @@
 #include "catch.hpp"
 
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "compare_result.hpp"
 #include "duckdb/main/query_result.hpp"
@@ -25,6 +26,8 @@ namespace duckdb {
 static string custom_test_directory;
 static case_insensitive_set_t required_requires;
 static bool delete_test_path = true;
+static string test_dir_base;     // --external-test-dir base; TEST_DIR becomes <base>/<random>
+static string test_dir_resolved; // computed once in SetTestDirBase: <base>/<random>
 
 bool NO_FAIL(QueryResult &result) {
 	if (result.HasError()) {
@@ -86,6 +89,23 @@ void SetTestDirectory(string path) {
 	custom_test_directory = path;
 }
 
+void SetTestDirBase(string base) {
+	test_dir_base = base;
+	// one random subdir per invocation becomes TEST_DIR. Resolved on disk lazily in
+	// TestDirectoryPath() so a relative base resolves against the test working directory.
+	auto random = UUID::ToString(UUID::GenerateRandomUUID());
+	if (FileSystem::IsRemoteFile(base)) {
+		test_dir_resolved = (!base.empty() && base.back() == '/') ? base + random : base + "/" + random;
+	} else {
+		duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+		test_dir_resolved = fs->JoinPath(base, random);
+	}
+}
+
+string GetTestDirBase() {
+	return test_dir_base;
+}
+
 void AddRequire(string require) {
 	required_requires.insert(require);
 }
@@ -102,6 +122,17 @@ string GetTestDirectory() {
 }
 
 string TestDirectoryPath() {
+	if (!test_dir_base.empty()) {
+		// caller-owned base (--external-test-dir): create the per-invocation subdir only for a
+		// local filesystem; for a remote base create nothing
+		if (!FileSystem::IsRemoteFile(test_dir_base)) {
+			duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+			if (!fs->DirectoryExists(test_dir_resolved)) {
+				fs->CreateDirectoriesRecursive(test_dir_resolved);
+			}
+		}
+		return test_dir_resolved;
+	}
 	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
 	auto test_directory = GetTestDirectory();
 	if (!fs->DirectoryExists(test_directory)) {

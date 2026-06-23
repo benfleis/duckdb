@@ -46,11 +46,14 @@ Usage in an extension's conftest.py:
 """
 
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
 
 import pytest
+
+from mnemonic import run_id as _make_run_id
 
 # ---------------------------------------------------------------------------
 # Per-process batch cache (coherent within a worker; xdist_group keeps a
@@ -92,6 +95,27 @@ def register_options(parser):
         help="Tests per unittest invocation (default: 10). Reduces subprocess "
         "overhead; use with -n for parallel batches.",
     )
+    parser.addoption(
+        "--external-test-dir",
+        default=None,
+        metavar="BASE",
+        help="Caller-owned base dir passed to the binary's --external-test-dir. "
+        "Tests run under BASE/<run-id>/<uuid> (run-id = timestamp--mnemonic, one per "
+        "pytest run; <uuid> per binary invocation). Disposition of BASE/<run-id> is "
+        "controlled by --external-test-dir-destroy. BASE may be local or remote (e.g. "
+        "s3://). NOTE: the <uuid> is per-invocation, so a batch shares one TEST_DIR; "
+        "use --batch-size 1 for a distinct dir per test.",
+    )
+    parser.addoption(
+        "--external-test-dir-destroy",
+        default="on-success",
+        choices=["never", "on-success", "always"],
+        metavar="{never,on-success,always}",
+        help="Destroy disposition for the per-run external dir (BASE/<run-id>): "
+        "never (NEVER_DESTROY) | on-success (MAY_DESTROY, default — remove only when the "
+        "run has no failures) | always (ALWAYS_DESTROY — remove regardless). Currently "
+        "owned by pytest; the same disposition may be pushed down into the binary.",
+    )
 
 
 def find_binary(config, working_dir):
@@ -104,6 +128,56 @@ def find_binary(config, working_dir):
         build_type = config.getoption("--build", default="debug")
         build_dir = os.path.join(working_dir, "build", build_type)
     return os.path.join(build_dir, "test", "unittest")
+
+
+# ---------------------------------------------------------------------------
+# External test dir: per-run id ($INVOCATION level) + cleanup
+#
+# When --external-test-dir BASE is given, tests run under BASE/<run-id>/<uuid>:
+#   <run-id>  = timestamp--mnemonic, ONE per pytest run (this level), and
+#   <uuid>    = appended by the binary, one per invocation (the current C++).
+# The run-id is computed once on the controller and shared to xdist workers so
+# every worker writes under the same BASE/<run-id>. On a clean run it is removed.
+# ---------------------------------------------------------------------------
+
+
+def _run_id(config):
+    """Return this run's id, cached on config; shared across xdist workers."""
+    cached = getattr(config, "_sqllogic_run_id", None)
+    if cached is not None:
+        return cached
+    wi = getattr(config, "workerinput", None)
+    run_id = wi["sqllogic_run_id"] if wi and "sqllogic_run_id" in wi else _make_run_id()
+    config._sqllogic_run_id = run_id
+    return run_id
+
+
+def _external_dir(config):
+    """BASE/<run-id> for this run, or None if --external-test-dir was not given."""
+    base = config.getoption("--external-test-dir", default=None)
+    return os.path.join(base, _run_id(config)) if base else None
+
+
+def pytest_configure_node(node):
+    # xdist controller hook: hand each worker the controller's run-id so all
+    # workers share one BASE/<run-id>.
+    node.workerinput["sqllogic_run_id"] = _run_id(node.config)
+
+
+def pytest_sessionfinish(session, exitstatus):
+    # Controller-only: drop the per-run external dir on a clean run (no failures),
+    # unless asked to keep it. Always kept on failure/interruption for debugging.
+    config = session.config
+    if getattr(config, "workerinput", None) is not None:
+        return  # this is a worker
+    destroy = config.getoption("--external-test-dir-destroy", default="on-success")
+    if destroy == "never":
+        return
+    if destroy == "on-success" and int(exitstatus) != 0:
+        return  # keep on failure/interruption for debugging
+    run_dir = _external_dir(config)
+    if run_dir and os.path.isdir(run_dir):  # isdir() also skips remote (s3://) bases
+        shutil.rmtree(run_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -170,6 +244,7 @@ class SqlLogicFile(pytest.File):
             test_name=test_name,
             binary=self._binary,
             working_dir=self._working_dir,
+            external_test_dir=_external_dir(self.config),
         )
 
 
@@ -180,11 +255,12 @@ class SqlLogicFile(pytest.File):
 
 class SqlLogicItem(pytest.Item):
     @classmethod
-    def from_parent(cls, parent, *, test_name, binary, working_dir, **kwargs):
+    def from_parent(cls, parent, *, test_name, binary, working_dir, external_test_dir=None, **kwargs):
         obj = super().from_parent(parent, **kwargs)
         obj._test_name = test_name
         obj._binary = binary
         obj._working_dir = working_dir
+        obj._external_test_dir = external_test_dir
         obj._batch_id = None
         obj._batch_test_names = None
         return obj
@@ -198,7 +274,9 @@ class SqlLogicItem(pytest.Item):
     # -- single-test path (batch_size == 1) ----------------------------------
 
     def _run_single(self):
-        result = _invoke(self._binary, [self._test_name], self._working_dir)
+        result = _invoke(
+            self._binary, [self._test_name], self._working_dir, self._external_test_dir
+        )
         _raise_for_result(_parse_result(result))
 
     # -- batch path (batch_size > 1) -----------------------------------------
@@ -207,7 +285,8 @@ class SqlLogicItem(pytest.Item):
         with _batch_cache_lock:
             if self._batch_id not in _batch_cache:
                 _batch_cache[self._batch_id] = _execute_batch(
-                    self._batch_test_names, self._binary, self._working_dir
+                    self._batch_test_names, self._binary, self._working_dir,
+                    self._external_test_dir,
                 )
         r = _batch_cache[self._batch_id].get(
             self._test_name, {"status": "internal_error"}
@@ -308,7 +387,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
 # ---------------------------------------------------------------------------
 
 
-def _execute_batch(test_names: list, binary: str, working_dir: str) -> dict:
+def _execute_batch(test_names: list, binary: str, working_dir: str,
+                   external_test_dir: str = None) -> dict:
     """Run a batch.  On failure, re-run individually for per-test attribution."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         tmpfile = f.name
@@ -326,6 +406,7 @@ def _execute_batch(test_names: list, binary: str, working_dir: str) -> dict:
                 str(len(test_names)),
             ],
             working_dir,
+            external_test_dir,
         )
     finally:
         os.unlink(tmpfile)
@@ -341,11 +422,15 @@ def _execute_batch(test_names: list, binary: str, working_dir: str) -> dict:
         }
 
     # Re-run individually so each item gets an accurate result.
-    return {name: _invoke_single(name, binary, working_dir) for name in test_names}
+    return {
+        name: _invoke_single(name, binary, working_dir, external_test_dir)
+        for name in test_names
+    }
 
 
-def _invoke_single(test_name: str, binary: str, working_dir: str) -> dict:
-    result = _invoke(binary, [test_name], working_dir)
+def _invoke_single(test_name: str, binary: str, working_dir: str,
+                   external_test_dir: str = None) -> dict:
+    result = _invoke(binary, [test_name], working_dir, external_test_dir)
     return _parse_result(result)
 
 
@@ -354,7 +439,11 @@ def _invoke_single(test_name: str, binary: str, working_dir: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _invoke(binary: str, args: list, working_dir: str) -> dict:
+def _invoke(binary: str, args: list, working_dir: str,
+            external_test_dir: str = None) -> dict:
+    if external_test_dir:
+        # caller-owned base; the binary makes TEST_DIR = <base>/<uuid> per invocation
+        args = ["--external-test-dir", str(external_test_dir), *args]
     try:
         proc = subprocess.run(
             [binary] + args,

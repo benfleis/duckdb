@@ -128,6 +128,7 @@ void TestConfiguration::UpdateEnvironment() {
 	string temp_dir = TestDirectoryPath();
 	test_env["TEMP_DIR"] = temp_dir;                      // default: duckdb_unittest_tempdir/$PID
 	test_env["CATALOG_DIR"] = temp_dir + "/" + test_uuid; // _not_ guaranteed to exist
+	test_env["TEST_DIR_BASE"] = GetTestDirBase();         // set by --external-test-dir; empty otherwise
 }
 
 string TestConfiguration::GetWorkingDirectory() {
