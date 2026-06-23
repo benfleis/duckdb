@@ -1,4 +1,4 @@
-# pytest configuration to launch duckdb tests (SQLLogic, python, cpp)
+# pytest configuration for duckdb test suites — core or any extension.
 # For a full description of options, parallelism, and plugin internals see pytest.ini.
 
 import os
@@ -13,7 +13,7 @@ sys.path.insert(
 # plugin (below) doesn't warn about lost assertion rewriting.
 pytest.register_assert_rewrite("sqllogic")
 from sqllogic import register_options, find_binary, SqlLogicFile
-from sqllogic import has_sidecar, is_sidecar
+from sqllogic import has_driver, is_driver
 
 # Register sqllogic as a plugin so ALL its pytest_* hooks fire automatically
 # (pytest_collection_modifyitems, pytest_terminal_summary, future ones) — no
@@ -38,16 +38,17 @@ def pytest_configure(config):
 def pytest_collect_file(parent, file_path):
     if not str(file_path).startswith(_TEST_ROOT + os.sep):
         return None
-    # a sidecar .py (same-stem .test exists) is collected as a normal pytest
-    # module so its fixtures provide setup/teardown around the paired .test
+    # a driver .py (same-stem .test exists) is collected as a normal pytest module
+    # so its fixtures wrap the .test with Python initialize/finalize
     if file_path.suffix == ".py":
-        if is_sidecar(file_path):
+        if is_driver(file_path):
             return pytest.Module.from_parent(parent, path=file_path)
         return None
     if file_path.suffix != ".test":
         return None
-    # a .test claimed by a same-stem sidecar .py runs only via that .py
-    if has_sidecar(file_path):
+    # a .test with a same-stem .py driver runs only via that driver (suppressed
+    # here to avoid a double run)
+    if has_driver(file_path):
         return None
     binary = find_binary(parent.config, _WORKING_DIR)
     return SqlLogicFile.from_parent(

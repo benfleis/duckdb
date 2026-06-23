@@ -181,12 +181,24 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 # ---------------------------------------------------------------------------
-# Sidecar (.py) support
+# Members, roles, and drivers
 #
-# A same-stem `.py` "claims" its `.test`: the `.py` is collected as a normal
-# pytest module (so it gets native setup/teardown via fixtures) and drives the
-# `.test` through the binary via run_paired(); the standalone `.test` is then
-# suppressed from collection (see conftest) to avoid a double run.
+# A *test* is the set of same-stem *members* under test/** (e.g. foo.test +
+# foo.py). Each member plays one or more *roles*:
+#   - body   : holds test logic that is run — a `.test`/`.sql`, or a `.py` that
+#              carries its own assertions (the py-exclusive case).
+#   - driver : orchestrates execution (initialize/finalize) around a body — a `.py`.
+# Roles are not file types: a `.py` can be a driver, a body, or BOTH (drive a
+# same-stem body AND carry its own assertions). A `.test`/`.sql` is always a body.
+#
+# This module handles the *driver* case: a `.py` with a same-stem `.test` body.
+# The `.py` is collected and drives that body through the binary via run_paired();
+# the standalone body is suppressed (see conftest) so it runs only via its driver.
+#
+# CURRENT LIMITATION: the driving `.py` is the reported unit, not the body —
+# flipping so the body is reported (driver only contributes hooks) is the pending
+# rework. The py-as-body-only case (a `.py` with no same-stem body) is the
+# deferred py-exclusive lane — not collected today (python_files is off).
 # ---------------------------------------------------------------------------
 
 
@@ -194,23 +206,27 @@ def _stem_path(path, suffix):
     return os.path.splitext(str(path))[0] + suffix
 
 
-def has_sidecar(test_path) -> bool:
-    """True if a same-stem `.py` sits next to this `.test` (claims it)."""
-    return os.path.exists(_stem_path(test_path, ".py"))
+def has_driver(body_path) -> bool:
+    """True if this body (`.test`/`.sql`) has a same-stem `.py` driver."""
+    return os.path.exists(_stem_path(body_path, ".py"))
 
 
-def is_sidecar(py_path) -> bool:
-    """True if this `.py` has a same-stem `.test` to drive."""
+def is_driver(py_path) -> bool:
+    """True if this `.py` is a driver — it has a same-stem body (`.test`) to drive.
+
+    A `.py` with no same-stem body is itself a body (the py-exclusive case), not a
+    driver; that lane is not handled here yet.
+    """
     return os.path.exists(_stem_path(py_path, ".test"))
 
 
 def run_paired(request, *, external_test_dir=None):
-    """Drive the `.test` paired with the calling sidecar `.py` through the binary.
+    """Drive the calling driver `.py`'s same-stem body (`.test`) through the binary.
 
-    Call from the sidecar's test body once setup has run. Raises SqlLogicFailure
-    on failure and pytest.skip on a skipped test, so the sidecar test reflects the
-    real SQL result. Pass external_test_dir to hand the binary a caller-owned base
-    dir (--external-test-dir) that setup has already staged into.
+    Call from the driver's test function once initialization has run. Raises
+    SqlLogicFailure on failure and pytest.skip on a skipped test, so the driver
+    reflects the real SQL result. Pass external_test_dir to hand the binary a
+    caller-owned base dir (--external-test-dir) that initialization already staged into.
     """
     working_dir = request.config.sqllogic_working_dir
     binary = find_binary(request.config, working_dir)
@@ -310,7 +326,7 @@ class SqlLogicItem(pytest.Item):
 
 
 def pytest_collection_modifyitems(session, config, items):
-    # Dedupe by nodeid: a sidecar .py named explicitly on the CLI is collected
+    # Dedupe by nodeid: a driver .py named explicitly on the CLI is collected
     # both natively and by our hook, and (later) a .test reachable via both the
     # filesystem scan and `unittest -l` overlaps. Keep the first of each.
     seen = set()
