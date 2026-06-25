@@ -1,5 +1,6 @@
 # pytest configuration for duckdb test suites — core or any extension.
 # For a full description of options, parallelism, and plugin internals see pytest.ini.
+# Layout, model, and extension (symlink) setup: see test/py/driver/README.md.
 
 import os
 import sys
