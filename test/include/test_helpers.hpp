@@ -50,6 +50,8 @@ string TestCreatePath(string suffix);
 unique_ptr<DBConfig> GetTestConfig();
 bool TestIsInternalError(unordered_set<string> &internal_error_messages, const string &error);
 void SetTestDirectory(string path);
+void SetEmitOnSkip(bool emit);
+bool EmitOnSkipEnabled();
 void SetDebugInitialize(int value);
 void AddRequire(string require);
 bool IsRequired(string require);
