@@ -220,7 +220,20 @@ bool TestConfiguration::TryParseOption(const string &name, const Value &value) {
 		return false;
 	}
 	auto &test_config = test_config_options[config_index.GetIndex()];
-	auto parameter = value.DefaultCastAs(test_config.type);
+	// Config values arrive as strings, parsed as SQL types. Lists in paricular are
+	// user-unfriendly, requiring [] wrappers instead of just-plain-commas.
+	// Help out here, and add [] for list-of-strings. This intentionally also
+	// allows a meaningful '' empty arg to work for list-type params,
+	// eg --skip_error_messages='' -> [], and ='HTTP' -> [HTTP]
+	Value to_cast = value;
+	if (test_config.type.id() == LogicalTypeId::LIST && value.type().id() == LogicalTypeId::VARCHAR &&
+	    !value.IsNull()) {
+		auto str = value.GetValue<string>();
+		if (str.empty() || str[0] != '[') {
+			to_cast = Value("[" + str + "]");
+		}
+	}
+	auto parameter = to_cast.DefaultCastAs(test_config.type);
 	if (test_config.on_set_option) {
 		test_config.on_set_option(parameter);
 	}
