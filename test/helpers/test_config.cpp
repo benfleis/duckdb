@@ -27,6 +27,33 @@ static const TestConfigOption test_config_options[] = {
      "Root dir for test data (DATA_DIR / {DATA_DIR}); default {WORKING_DIR}/data. Relative values "
      "resolve per test cwd; absolute/remote (e.g. az://...) values are used verbatim.",
      LogicalType::VARCHAR, nullptr},
+    // --temp-dir-* family + run-id. Registered here, not parsed bespoke in unittest.cpp, so each gets the
+    // DUCKDB_TEST_<NAME> fallback and --test-config support every other option has. VARCHAR rather than
+    // BOOLEAN preserves the `--temp-dir-run-id on` CLI shape; the setters below reject anything else.
+    {"temp_dir_base",
+     "Root of the temp-dir tree (TEMP_DIR_BASE / $BASE); default duckdb_unittest_tempdir. May be local "
+     "or remote (e.g. az://...); a remote base clamps create/destroy to never.",
+     LogicalType::VARCHAR, TestConfiguration::SetTempDirBaseOption},
+    {"local_temp_dir_base",
+     "Base for the LOCAL_TEMP_DIR tree when temp_dir_base is remote; default duckdb_unittest_tempdir. "
+     "Must be local; an error against a local temp_dir_base, which is its own LOCAL_TEMP_DIR.",
+     LogicalType::VARCHAR, TestConfiguration::SetLocalTempDirBaseOption},
+    {"run_id", "Run identity (RUN_ID env, and the [RUN_ID] path level); 'auto' or absent generates one",
+     LogicalType::VARCHAR, TestConfiguration::SetRunIdOption},
+    {"temp_dir_run_id", "Include the [RUN_ID] level in TEMP_DIR: on, off", LogicalType::VARCHAR,
+     TestConfiguration::SetTempDirRunIdOption},
+    {"temp_dir_test_id", "Include the [TEST_ID] level in TEMP_DIR: on, off", LogicalType::VARCHAR,
+     TestConfiguration::SetTempDirTestIdOption},
+    {"temp_dir_create", "Temp-dir create disposition: never, on-absent, always", LogicalType::VARCHAR,
+     TestConfiguration::SetTempDirCreateOption},
+    {"temp_dir_destroy", "Temp-dir destroy disposition: never, on-success, always", LogicalType::VARCHAR,
+     TestConfiguration::SetTempDirDestroyOption},
+    {"database_destroy", "Loaded-database destroy disposition: on, off, on-success", LogicalType::VARCHAR,
+     TestConfiguration::SetDatabaseDestroyOption},
+    {"env_passthrough",
+     "Env var names pre-registered for {NAME} substitution in every test, read from the real process "
+     "env; a named-but-absent var fails the whole invocation at startup",
+     LogicalType::LIST(LogicalType::VARCHAR), TestConfiguration::AppendEnvPassthrough},
     {"max_threads", "Max threads to use during tests", LogicalType::BIGINT, nullptr},
     {"max_test_threads", "Max threads to be used by the test runner itself (for e.g. concurrent loop)",
      LogicalType::BIGINT, nullptr},
@@ -140,14 +167,11 @@ void TestConfiguration::UpdateEnvironment() {
 	// here, so it survives cwd changes -- an absolute/remote value stays put, a relative value is resolved
 	// per test cwd. Absent an override, default to <cwd>/data, which re-anchors on an extension chdir.
 	auto data_dir_override = GetOptionOrDefault("data_dir", string());
-	test_env["DATA_DIR"] = data_dir_override.empty() ? working_dir + "/data" : data_dir_override;
+	string default_data_dir = working_dir + "/data";
+	test_env["DATA_DIR"] = data_dir_override.empty() ? default_data_dir : data_dir_override;
 
 	string temp_dir = TestDirectoryPath();
-	auto fs = FileSystem::CreateLocal();
-	string temp_dir_absolute = temp_dir;
-	if (!fs->IsPathAbsolute(temp_dir_absolute)) {
-		temp_dir_absolute = fs->JoinPath(working_dir, temp_dir_absolute);
-	}
+	string temp_dir_absolute = TestMakeAbsolute(temp_dir, working_dir);
 	// TEMP_DIR here is the run-id root ($BASE/[RUN_ID]); the per-test path overrides it per
 	// runner with the full $BASE/[RUN_ID]/[TEST_ID] once a test name is known.
 	test_env["TEMP_DIR"] = temp_dir;                      // run-root ($BASE/$RUN_ID); per-test gets +=$TEST_ID
@@ -155,6 +179,27 @@ void TestConfiguration::UpdateEnvironment() {
 	test_env["TEMP_DIR_BASE"] = GetTempDirBase();         // $BASE; default duckdb_unittest_tempdir
 	test_env["RUN_ID"] = GetTempDirRunId();               // RUN_ID (--run-id, or generated); always set
 	test_env["CATALOG_DIR"] = temp_dir + "/" + test_uuid; // _not_ guaranteed to exist
+
+	// Guaranteed-local mirrors of DATA_DIR / TEMP_DIR, so a test has somewhere local to stage or spill
+	// even against a remote root. The one resolver of record (SPEC 11.2): a driver-supplied LOCAL_X wins,
+	// and HasTestEnv() forces the config overlay so this sees such a key before deciding.
+	if (!HasTestEnv("LOCAL_DATA_DIR")) {
+		test_env["LOCAL_DATA_DIR"] =
+		    FileSystem::IsRemoteFile(test_env["DATA_DIR"]) ? default_data_dir : test_env["DATA_DIR"];
+	}
+	if (!HasTestEnv("LOCAL_TEMP_DIR")) {
+		test_env["LOCAL_TEMP_DIR"] = LocalTestDirectoryPath();
+	}
+
+	// Caller-named vars get the same "in test_env before the body parses" treatment as DATA_DIR/TEMP_DIR,
+	// so a .test file uses {NAME} with no require-env of its own. main() already ran
+	// ValidateEnvPassthrough, so the null check is defensive only.
+	for (auto &name : GetEnvPassthroughNames()) {
+		auto value = std::getenv(name.c_str());
+		if (value) {
+			test_env[name] = value;
+		}
+	}
 
 	// Re-overlay caller `test_env` config entries so they win over the standard defaults just recomputed
 	// above (important when a cwd change re-runs UpdateEnvironment).
@@ -400,6 +445,55 @@ void TestConfiguration::ParseConnectScript(const Value &input) {
 
 	auto &test_config = TestConfiguration::Get();
 	test_config.ParseOption("on_init", Value(init_cmd));
+}
+
+// Each defers to the test_helpers setter of record and turns its bool return into the error, so a
+// knob's valid-value list lives in exactly one place.
+static void SetTempDirOption(const string &option, bool (*setter)(const string &), const Value &input,
+                             const char *expects) {
+	if (!setter(input.ToString())) {
+		throw std::runtime_error(option + " expects one of: " + expects);
+	}
+}
+
+void TestConfiguration::SetTempDirBaseOption(const Value &input) {
+	SetTempDirBase(input.ToString());
+}
+
+void TestConfiguration::SetLocalTempDirBaseOption(const Value &input) {
+	SetLocalTempDirBase(input.ToString());
+}
+
+void TestConfiguration::SetRunIdOption(const Value &input) {
+	SetRunId(input.ToString());
+}
+
+void TestConfiguration::SetTempDirRunIdOption(const Value &input) {
+	SetTempDirOption("--temp-dir-run-id", SetTempDirRunIdInPath, input, "on, off");
+}
+
+void TestConfiguration::SetTempDirTestIdOption(const Value &input) {
+	SetTempDirOption("--temp-dir-test-id", SetTempDirTestId, input, "on, off");
+}
+
+void TestConfiguration::SetTempDirCreateOption(const Value &input) {
+	SetTempDirOption("--temp-dir-create", SetTempDirCreate, input, "never, on-absent, always");
+}
+
+void TestConfiguration::SetTempDirDestroyOption(const Value &input) {
+	SetTempDirOption("--temp-dir-destroy", SetTempDirDestroy, input, "never, on-success, always");
+}
+
+void TestConfiguration::SetDatabaseDestroyOption(const Value &input) {
+	SetTempDirOption("--database-destroy", SetDatabaseDestroy, input, "on, off, on-success");
+}
+
+void TestConfiguration::AppendEnvPassthrough(const Value &input) {
+	// Accumulates rather than replaces (as select_tag does): repeating the flag is the documented way to
+	// name several vars, so the env and config forms must union with it, not clobber it.
+	for (auto &name : ListValue::GetChildren(input)) {
+		AddEnvPassthrough(name.ToString());
+	}
 }
 
 void TestConfiguration::CheckSortStyle(const Value &input) {

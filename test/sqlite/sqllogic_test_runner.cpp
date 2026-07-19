@@ -149,6 +149,10 @@ void SQLLogicTestRunner::CountSkipMode() {
 }
 
 void SQLLogicTestRunner::EmitBegin(const string &test_name) {
+	// Snapshotted before the enabled check and before the body runs: this is the dir the harness just
+	// assigned, and it must survive any test-env rewrite so end still reports what begin did.
+	auto entry = environment_variables.find("TEMP_DIR");
+	emit_temp_dir = entry == environment_variables.end() ? "" : entry->second;
 	if (!EmitTestEventsEnabled()) {
 		return;
 	}
@@ -156,6 +160,9 @@ void SQLLogicTestRunner::EmitBegin(const string &test_name) {
 	auto obj = writer.CreateObject();
 	obj.AddString("event", "begin");
 	obj.AddString("name", test_name);
+	// Lets a consumer verify which invocation emitted this rather than inferring it from which
+	// subprocess it launched: under --temp-dir-base the prefix is what the driver passed in.
+	obj.AddString("temp_dir", emit_temp_dir);
 	writer.SetRoot(obj);
 	SQLLogicTestLogger::EmitTestEvent(writer.ToString());
 }
@@ -177,6 +184,7 @@ void SQLLogicTestRunner::EmitEnd(const string &test_name, const string &status, 
 	if (!data.empty()) {
 		obj.AddString("data", data);
 	}
+	obj.AddString("temp_dir", emit_temp_dir);
 	writer.SetRoot(obj);
 	SQLLogicTestLogger::EmitTestEvent(writer.ToString());
 }

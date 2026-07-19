@@ -46,6 +46,9 @@ void DeleteDatabase(string path);
 void TestDeleteDirectory(string path);
 void TestCreateDirectory(string path);
 string TestJoinPath(string path1, string path2);
+//! `path` made absolute against `anchor`. Already-absolute inputs are returned unchanged, including
+//! a scheme'd URI (az://...) -- absolute, but not local.
+string TestMakeAbsolute(const string &path, const string &anchor);
 void TestDeleteFile(string path);
 void TestChangeDirectory(string path);
 
@@ -56,9 +59,9 @@ string TestGetCurrentDirectory();
 string TestDirectoryPath();
 string TestCreatePath(string suffix);
 
-//! The HOME sandbox dir ("<run-root>-home"): a sibling of the run root, never inside any {TEST_DIR}.
-//! main points HOME/USERPROFILE here once per invocation (isolates ~/.duckdb without landing inside a
-//! test-whitelisted dir). Materialized by PrepareTempDir, reclaimed by DestroyTempDir.
+//! The HOME sandbox ("<run-root>-home"), a sibling of the run root and never inside any {TEST_DIR}.
+//! main points HOME/USERPROFILE here once per invocation. Always local -- a scheme'd URI cannot back
+//! ~/.duckdb, so a remote base resolves against the local mirror.
 string GetTempDirHome();
 
 void SetEmitTestEvents(bool emit);
@@ -103,6 +106,12 @@ enum class DatabaseDestroy : uint8_t {
 void SetTempDirBase(const string &base);
 //! Returns the resolved base ("duckdb_unittest_tempdir" by default).
 string GetTempDirBase();
+//! Base for the LOCAL_TEMP_DIR tree when the primary base is remote -- pins local output somewhere
+//! chosen instead of the default local base. Must itself be local, and is an error against a local
+//! primary, which is its own LOCAL_TEMP_DIR.
+void SetLocalTempDirBase(const string &base);
+//! The --local-temp-dir-base override, or "" when unset (the default local base is used).
+string GetLocalTempDirBase();
 //! Returns the resolved RUN_ID value ("" when RUN_ID is off).
 string GetTempDirRunId();
 //! --temp-dir-run-id {off|auto|<id>}: off => no RUN_ID level; auto => generated
@@ -124,6 +133,10 @@ bool PrepareTempDir(string &error);
 void DestroyTempDir(bool success);
 //! Executes the TEST_ID destroy disposition using THIS test's pass/fail (called at test end).
 void DestroyTestTempDir(bool success);
+//! LOCAL_TEMP_DIR: TestDirectoryPath()'s guaranteed-local twin -- same composition, lifecycle and
+//! per-test $TEST_ID level. It IS TestDirectoryPath() when the base is local; a separately-managed
+//! mirror rooted at the default base when remote.
+string LocalTestDirectoryPath();
 // -----------------------------------------------------------------------------
 
 void SetEmitOnSkip(bool emit);
@@ -131,6 +144,17 @@ bool EmitOnSkipEnabled();
 void SetDebugInitialize(int value);
 void AddRequire(string require);
 bool IsRequired(string require);
+
+// -----------------------------------------------------------------------------
+// --env-passthrough NAME (repeatable; also DUCKDB_TEST_ENV_PASSTHROUGH / config `env_passthrough`,
+// comma-separated): pre-registers an env var for {NAME} substitution in every test, the treatment
+// DATA_DIR/TEMP_DIR get, so no require-env/test-env is needed in the body. Unlike require-env's
+// per-test skip, a named-but-absent var fails the whole invocation at startup.
+void AddEnvPassthrough(string name);
+const duckdb::set<string> &GetEnvPassthroughNames();
+//! false + `error` set if a --env-passthrough name is reserved by the runner, or absent from the env.
+bool ValidateEnvPassthrough(string &error);
+// -----------------------------------------------------------------------------
 
 bool NO_FAIL(QueryResult &result);
 bool NO_FAIL(duckdb::unique_ptr<QueryResult> result);

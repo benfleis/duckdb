@@ -2,6 +2,7 @@
 #include "catch.hpp"
 
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/path.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
 #include "compare_result.hpp"
 #include "duckdb/main/query_result.hpp"
@@ -29,19 +30,38 @@ static bool delete_test_path = true;
 static bool emit_on_skip = false; // --emit-on-skip opt-in: emit a [SKIP_TEST] marker per skipped test
 
 // --temp-dir-* family state: TEMP_DIR = $BASE/[RUN_ID]/[TEST_ID] (see DISPOSITIONS.md).
-static string temp_dir_base = TESTING_DIRECTORY_NAME; // $BASE; default duckdb_unittest_tempdir
-static bool temp_dir_run_id_in_path = true;           // --temp-dir-run-id {on|off}: RUN_ID as a path level
-static string temp_dir_run_id;                        // RUN_ID value (--run-id, or generated when absent)
+static bool temp_dir_run_id_in_path = true; // --temp-dir-run-id {on|off}: RUN_ID as a path level
+static string temp_dir_run_id;              // RUN_ID value (--run-id, or generated when absent)
 static bool temp_dir_test_id = true;
 static TempDirCreate temp_dir_create = TempDirCreate::ON_ABSENT;
 static TempDirDestroy temp_dir_destroy = TempDirDestroy::ON_SUCCESS;
 // --database-destroy: independent of the temp-dir dispositions (see test_helpers.hpp).
 static DatabaseDestroy database_destroy = DatabaseDestroy::ON_SUCCESS;
-// Levels THIS invocation created (outermost..leaf), split by lifecycle so each
-// destroy step reclaims only what its own step made.
-static vector<string> temp_dir_run_created_levels;  // $BASE..$RUN_ID (main / Prepare|DestroyTempDir)
-static vector<string> temp_dir_test_created_levels; // $TEST_ID (per-test path)
-static string temp_dir_active_test_leaf;            // currently-materialized TEST_ID dir ("" when none)
+
+// One temp-dir tree: $BASE/[RUN_ID]/[TEST_ID]. Two exist -- the primary (--temp-dir-base, may be
+// remote) and, only when the primary is remote, the local mirror behind LOCAL_TEMP_DIR.
+struct TempDirTree {
+	TempDirTree(const Path &base_p, bool caller_provisioned_p)
+	    : base(base_p), caller_provisioned(caller_provisioned_p) {
+	}
+
+	//! Parsed once, at the CLI/config boundary -- so composition is Path::Join (which knows how to
+	//! extend a scheme'd URI) and remoteness is parsed state rather than a re-scan per query.
+	Path base;
+	//! false when unittest picked the base itself (the default local mirror): nobody can have
+	//! pre-provisioned it, so create=never has nothing to mean there and floors to on-absent. True for
+	//! the primary and for an explicit --local-temp-dir-base. Destroy always follows the disposition.
+	bool caller_provisioned;
+	// Levels THIS invocation created, split by lifecycle step so each destroy reclaims only its own.
+	vector<string> run_created_levels;  // $BASE..$RUN_ID
+	vector<string> test_created_levels; // $TEST_ID
+	string active_test_leaf;            // currently-materialized $TEST_ID dir ("" when none)
+};
+
+static TempDirTree primary_tree(Path::FromString(TESTING_DIRECTORY_NAME), true); // $BASE
+static TempDirTree local_tree(Path(), false); // base resolved lazily; see LocalTree()
+static bool local_tree_resolved = false;      // Path() is "." not "empty", so track this separately
+static string local_temp_dir_base_override;   // --local-temp-dir-base ("" -> the default local base)
 
 bool NO_FAIL(QueryResult &result) {
 	if (result.HasError()) {
@@ -99,6 +119,16 @@ string TestJoinPath(string path1, string path2) {
 	return fs->JoinPath(path1, path2);
 }
 
+string TestMakeAbsolute(const string &path, const string &anchor) {
+	// Path::IsAbsolute, not fs->IsPathAbsolute: the latter is POSIX/Windows-only and reads a scheme'd
+	// URI as relative, so we would JoinPath it onto a local anchor -- which throws.
+	if (Path::FromString(path).IsAbsolute()) {
+		return path;
+	}
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	return fs->JoinPath(anchor, path);
+}
+
 void SetEmitOnSkip(bool emit) {
 	emit_on_skip = emit;
 }
@@ -116,17 +146,82 @@ bool IsRequired(string require) {
 }
 
 // -----------------------------------------------------------------------------
+// --env-passthrough NAME: env vars pre-registered for {NAME} substitution -- see test_helpers.hpp.
+// Case-SENSITIVE, matching both env var names and the test_env map these land in.
+static duckdb::set<string> env_passthrough_names;
+
+// Passing one of these through would silently replace a runner-resolved value with the ambient shell's.
+static const char *const RESERVED_ENV_PASSTHROUGH[] = {
+    "BUILD_DIR", "CATALOG_DIR",         "DATA_DIR",  "LOCAL_DATA_DIR",    "LOCAL_TEMP_DIR",
+    "RUN_ID",    "TEMP_DIR",            "TEMP_DIR_ABSOLUTE", "TEMP_DIR_BASE", "TEST_ID",
+    "TEST_NAME", "TEST_NAME__NO_SLASH", "TEST_UUID", "WORKING_DIR"};
+
+void AddEnvPassthrough(string name) {
+	env_passthrough_names.insert(name);
+}
+
+const duckdb::set<string> &GetEnvPassthroughNames() {
+	return env_passthrough_names;
+}
+
+bool ValidateEnvPassthrough(string &error) {
+	string missing;
+	string reserved;
+	for (auto &name : env_passthrough_names) {
+		if (!std::getenv(name.c_str())) {
+			missing += (missing.empty() ? "" : ", ") + name;
+		}
+		for (auto &blocked : RESERVED_ENV_PASSTHROUGH) {
+			if (StringUtil::CIEquals(name, blocked)) {
+				reserved += (reserved.empty() ? "" : ", ") + name;
+				break;
+			}
+		}
+	}
+	if (!reserved.empty()) {
+		error = "--env-passthrough: reserved by the test runner, cannot be passed through: " + reserved;
+		return false;
+	}
+	if (!missing.empty()) {
+		error = "--env-passthrough: missing from the environment: " + missing;
+		return false;
+	}
+	return true;
+}
+// -----------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------
 // --temp-dir-* family
 //
 
-static string ResolveRunId(); // resolved RUN_ID value (always set; generated even when off); defined below
+static string ResolveRunId(); // always set, generated when --run-id is absent; defined below
+
+void SetLocalTempDirBase(const string &base) {
+	if (base.empty()) {
+		throw std::runtime_error("--local-temp-dir-base requires a non-empty value");
+	}
+	// The mirror exists to be the thing a remote base cannot be, so a remote one is a contradiction.
+	if (Path::FromString(base).IsRemote()) {
+		throw std::runtime_error("--local-temp-dir-base must be a local path, got: " + base);
+	}
+	local_temp_dir_base_override = base;
+}
+
+string GetLocalTempDirBase() {
+	return local_temp_dir_base_override;
+}
 
 void SetTempDirBase(const string &base) {
-	temp_dir_base = base;
+	// Rejected here, not in PrepareTempDir: Path::FromString("") is ".", so once parsed an empty base is
+	// indistinguishable from an explicit cwd and would silently root the whole tree at the repo.
+	if (base.empty()) {
+		throw std::runtime_error("--temp-dir-base requires a non-empty value");
+	}
+	primary_tree.base = Path::FromString(base);
 }
 
 string GetTempDirBase() {
-	return temp_dir_base;
+	return primary_tree.base.ToString();
 }
 
 string GetTempDirRunId() {
@@ -134,9 +229,8 @@ string GetTempDirRunId() {
 }
 
 void SetRunId(const string &id) {
-	// The run identity → RUN_ID env (and the path segment when --temp-dir-run-id on). "auto"
-	// (or absent) generates one on first resolve; any other value is a caller-supplied fixed id
-	// (pytest passes one shared id so a run's many unittest batches co-locate).
+	// Any value but "auto" is a caller-fixed id -- pytest passes one so a run's many unittest
+	// batches co-locate under a single RUN_ID.
 	temp_dir_run_id = (id == "auto") ? "" : id;
 }
 
@@ -213,28 +307,9 @@ bool DatabaseDestroyFires(bool success) {
 	}
 }
 
-// Join a leaf onto a parent. Remote parents are appended as pure strings (no VFS/mkdir);
-// local parents use the platform path join. An empty leaf yields the parent unchanged.
-static string JoinTempLevel(const string &parent, const string &leaf) {
-	if (leaf.empty()) {
-		return parent;
-	}
-	if (FileSystem::IsRemoteFile(parent)) {
-		if (parent.empty()) {
-			return leaf;
-		}
-		return (parent.back() == '/') ? parent + leaf : parent + "/" + leaf;
-	}
-	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	return fs->JoinPath(parent, leaf);
-}
-
-// RUN_ID auto value: sortable timestamp + a memorable mnemonic, e.g.
-// 2026-07-01T14-30-22Z--crimson-torus-07 (UTC). Mirrors the pytest driver's run-id shape
-// (test/py/driver/mnemonic.py: <ISO-basic>--<word>-<word>-<NN>) but uses DISTINCT word
-// banks — colors + shapes here vs the driver's adjectives + animals — so the run id's
-// vocabulary reveals its source: a color-shape run id was minted by the unittest binary, an
-// adjective-animal one by pytest.
+// RUN_ID auto value: sortable UTC timestamp + mnemonic, e.g. 2026-07-01T14-30-22Z--crimson-torus-07.
+// Same shape as the pytest driver's, but colors+shapes here vs its adjectives+animals -- so an id's
+// vocabulary reveals which side minted it.
 static const char *const TEMP_DIR_COLORS[] = {"crimson", "scarlet", "azure",   "cobalt", "teal",    "olive",
                                               "maroon",  "indigo",  "violet",  "coral",  "ochre",   "umber",
                                               "jade",    "ivory",   "slate",   "sienna", "magenta", "cyan",
@@ -259,50 +334,54 @@ static string GenerateAutoRunId() {
 	return string(ts) + "--" + color + "-" + shape + "-" + digits;
 }
 
-// Resolved RUN_ID value ("" when off). AUTO generates once and caches for the invocation.
+// The caller's --run-id, or a generated one, cached for the invocation. Always resolved, even when
+// RUN_ID is not a path segment (TreeRunIdRoot gates that) -- the env var exists either way.
 static string ResolveRunId() {
-	// The RUN_ID value is always resolved — the caller's --run-id, or a generated one when none
-	// was given — so the RUN_ID env var is populated even when run-id is not a TEMP_DIR path
-	// segment. Path inclusion is gated separately in ResolveRunIdRoot().
 	if (temp_dir_run_id.empty()) {
 		temp_dir_run_id = GenerateAutoRunId();
 	}
 	return temp_dir_run_id;
 }
 
-// $BASE/[RUN_ID] -- the run-id root; stable across the invocation. String-only (no IO).
-static string ResolveRunIdRoot() {
-	// run-id is a TEMP_DIR path segment only when --temp-dir-run-id on; the value still exists
-	// as the RUN_ID env var either way.
+// $BASE/[RUN_ID] -- stable across the invocation, no IO.
+static Path TreeRunIdRoot(const TempDirTree &tree) {
 	if (!temp_dir_run_id_in_path) {
-		return temp_dir_base;
+		return tree.base;
 	}
-	return JoinTempLevel(temp_dir_base, ResolveRunId());
+	return tree.base.Join(ResolveRunId());
 }
 
-// The HOME sandbox: a SIBLING of the run-id root ("<run-root>-home"), never *inside* it. HOME must
-// not fall within any {TEST_DIR} a test whitelists via allowed_directories -- else ~/.duckdb
-// (extensions, secrets) becomes an allowed path and permission tests (e.g. INSTALL-is-denied) break.
-// A sibling holds in both regimes: default {TEST_DIR}=$BASE/$RUN_ID/$TEST_ID (sibling under $RUN_ID),
-// managed {TEST_DIR}=$BASE (sibling of $BASE). Materialized by PrepareTempDir, reclaimed by DestroyTempDir.
-static string ResolveHomeDir() {
-	return ResolveRunIdRoot() + "-home";
+// The tree LOCAL_TEMP_DIR and HOME resolve against. A local primary IS the mirror, invariantly -- the
+// two can never be different local dirs, and PrepareTempDir rejects a --local-temp-dir-base that would
+// make them so. Resolved lazily: the mirror must be absolute (it outlives any test chdir) and the cwd
+// is only final once main() has changed into it.
+static TempDirTree &LocalTree() {
+	if (!primary_tree.base.IsRemote()) {
+		return primary_tree;
+	}
+	if (!local_tree_resolved) {
+		bool explicit_base = !local_temp_dir_base_override.empty();
+		string base = explicit_base ? local_temp_dir_base_override : string(TESTING_DIRECTORY_NAME);
+		local_tree.base = Path::FromString(TestMakeAbsolute(base, TestGetCurrentDirectory()));
+		local_tree.caller_provisioned = explicit_base;
+		local_tree_resolved = true;
+	}
+	return local_tree;
 }
 
+// A SIBLING of the run-id root, never inside it: HOME within a {TEST_DIR} that a test whitelists via
+// allowed_directories would make ~/.duckdb an allowed path and break permission tests (INSTALL-is-denied
+// and friends). Resolved against the local tree -- a scheme'd URI cannot back ~/.duckdb.
 string GetTempDirHome() {
-	return ResolveHomeDir();
+	// A sibling suffix, not a child, so this is string concatenation -- Path composes children only.
+	return TreeRunIdRoot(LocalTree()).ToString() + "-home";
 }
 
-// Test identity: sanitize the FULL test name to a single filesystem- and shell-safe path component.
-// Shared by the TEST_ID env var and the temp-dir leaf (ResolveTestId) so they agree.
+// The FULL test name as one filesystem- and shell-safe path component. Shared by the TEST_ID env var
+// and the temp-dir leaf so they agree. The body suffix is kept (dropping it would collide foo.test with
+// foo.test_slow onto one dir); everything unsafe is mapped, not just '/' and '.', because Catch2 case
+// names are free-form prose and the leaf must survive unquoted in tests that shell out via system().
 string TestNameToId(const string &name) {
-	// Keep the whole name, including any body suffix (.test / .test_slow / .test_coverage): dropping it
-	// would collide siblings that differ only by suffix (foo.test vs foo.test_slow) onto one TEST_ID and
-	// one temp dir. Map every char outside [A-Za-z0-9_-] to '_' -- notably '.' -> '_', so the suffix
-	// survives as a distinct, path-safe segment (foo_test vs foo_test_slow). SQL names are path-like
-	// (only '/' and '.' need mapping); C++ Catch2 case names are free-form ("Test replaying mismatching
-	// WAL files"), so spaces/quotes/parens/etc. must go too -- else the leaf is unusable as an unquoted
-	// shell path in tests that shell out via system() (e.g. `cp $TEST_DIR/a $TEST_DIR/b`).
 	string id;
 	id.reserve(name.size());
 	for (char c : name) {
@@ -330,9 +409,17 @@ static string ResolveTestId() {
 	return TestNameToId(name);
 }
 
-// Full resolved path $BASE/[RUN_ID]/[TEST_ID]. String-only (no IO).
-static string ResolveTempDirPath() {
-	return JoinTempLevel(ResolveRunIdRoot(), ResolveTestId());
+// Full resolved path $BASE/[RUN_ID]/[TEST_ID] for `tree`. No IO.
+static Path TreeTestPath(const TempDirTree &tree) {
+	return TreeRunIdRoot(tree).Join(ResolveTestId());
+}
+
+// The create disposition as it applies to `tree` -- see TempDirTree::caller_provisioned.
+static TempDirCreate TreeCreate(const TempDirTree &tree) {
+	if (!tree.caller_provisioned && temp_dir_create == TempDirCreate::NEVER) {
+		return TempDirCreate::ON_ABSENT;
+	}
+	return temp_dir_create;
 }
 
 static bool DirectoryIsEmpty(FileSystem &fs, const string &path) {
@@ -341,10 +428,9 @@ static bool DirectoryIsEmpty(FileSystem &fs, const string &path) {
 	return empty;
 }
 
-// mkdir-p `path`, recording into `created` (outermost..leaf) which levels did not
-// previously exist so the matching destroy step removes only what it created. The walk
-// stops at the first pre-existing ancestor, so shared/parent levels created by an earlier
-// lifecycle step (or a prior run) are never recorded here.
+// mkdir-p `path`, recording into `created` (outermost..leaf) the levels that did not already exist,
+// so the matching destroy removes only what it made. The walk stops at the first pre-existing
+// ancestor -- levels owned by an earlier lifecycle step or a prior run are never recorded.
 static void RecordAndCreateLevels(FileSystem &fs, const string &path, vector<string> &created) {
 	vector<string> to_create; // innermost first
 	string p = path;
@@ -361,9 +447,8 @@ static void RecordAndCreateLevels(FileSystem &fs, const string &path, vector<str
 	created = to_create;
 }
 
-// Recursive bottom-up reclaim: remove `leaf` (and its contents), then walk up `created`
-// removing each ancestor iff it is empty and this step created it; stop at the first
-// non-empty / not-this-step-created level. Shared by both destroy lifecycle steps.
+// Remove `leaf` recursively, then walk `created` bottom-up removing each ancestor iff it is empty
+// and this step created it. Stops at the first level that is neither.
 static void ReclaimLevels(FileSystem &fs, const string &leaf, const vector<string> &created) {
 	if (fs.DirectoryExists(leaf)) {
 		try {
@@ -402,19 +487,15 @@ static bool DestroyFires(TempDirDestroy disposition, bool success) {
 	}
 }
 
-bool PrepareTempDir(string &error) {
-	if (temp_dir_base.empty()) {
-		error = "the --temp-dir-* family requires a non-empty base";
-		return false;
-	}
-	// Remote clamp: a remote base forces create=NEVER + destroy=NEVER; nothing to
-	// materialize here (object stores create-on-write; the test owns materialization).
-	if (FileSystem::IsRemoteFile(temp_dir_base)) {
+// Provision $BASE/[RUN_ID] per the create disposition, recording the levels it created.
+static bool PrepareTree(TempDirTree &tree, string &error) {
+	// Remote bases clamp to create=NEVER: object stores create-on-write, so the test owns materialization.
+	if (tree.base.IsRemote()) {
 		return true;
 	}
 	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	string root = ResolveRunIdRoot(); // $BASE/[RUN_ID]
-	switch (temp_dir_create) {
+	string root = TreeRunIdRoot(tree).ToString(); // $BASE/[RUN_ID]
+	switch (TreeCreate(tree)) {
 	case TempDirCreate::NEVER:
 		if (!fs->DirectoryExists(root)) {
 			error = "temp dir does not exist and --temp-dir-create=never: " + root;
@@ -422,85 +503,137 @@ bool PrepareTempDir(string &error) {
 		}
 		break;
 	case TempDirCreate::ON_ABSENT:
-		RecordAndCreateLevels(*fs, root, temp_dir_run_created_levels);
+		RecordAndCreateLevels(*fs, root, tree.run_created_levels);
 		break;
 	case TempDirCreate::ALWAYS:
 		if (fs->DirectoryExists(root)) {
 			fs->RemoveDirectory(root); // recursive
 		}
-		RecordAndCreateLevels(*fs, root, temp_dir_run_created_levels);
+		RecordAndCreateLevels(*fs, root, tree.run_created_levels);
 		break;
 	}
-	// HOME sandbox (sibling of the run root). Always materialized -- HOME must exist regardless of the
-	// temp-dir create disposition (some code errors if home_directory is set but absent).
-	string home = ResolveHomeDir();
+	return true;
+}
+
+static bool PrepareTempDirInternal(string &error) {
+	// Checked here, not at set time: it depends on two options, which arrive in any order from the CLI,
+	// the environment and a config file.
+	if (!GetLocalTempDirBase().empty() && !primary_tree.base.IsRemote()) {
+		error = "--local-temp-dir-base only applies to a remote --temp-dir-base; a local base is its own "
+		        "LOCAL_TEMP_DIR (temp-dir-base: " + primary_tree.base.ToString() + ")";
+		return false;
+	}
+	if (!PrepareTree(primary_tree, error)) {
+		return false;
+	}
+	auto &local = LocalTree();
+	if (&local != &primary_tree && !PrepareTree(local, error)) {
+		return false;
+	}
+	// LAST, and this ordering is load-bearing: HOME is a sibling of the run root, so creating it earlier
+	// would materialize $BASE behind PrepareTree's back, RecordAndCreateLevels would read it as
+	// pre-existing, and it would never be reclaimed. Unconditional -- some code errors if
+	// home_directory is set but absent.
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	string home = GetTempDirHome();
 	if (!fs->DirectoryExists(home)) {
 		fs->CreateDirectoriesRecursive(home);
 	}
 	return true;
 }
 
-void DestroyTempDir(bool success) {
-	// Remote clamp: destroy is forced to NEVER for remote bases.
-	if (FileSystem::IsRemoteFile(temp_dir_base)) {
-		return;
+bool PrepareTempDir(string &error) {
+	// Every mkdir/rmdir above is a syscall that can fail for reasons the caller can do nothing about
+	// (permissions, ENOSPC, a race). Funnel them into `error` -- this function's whole contract is to
+	// report startup failures, and an escaping exception would terminate instead.
+	try {
+		return PrepareTempDirInternal(error);
+	} catch (std::exception &ex) {
+		error = ErrorData(ex).Message();
+		return false;
 	}
-	if (!DestroyFires(temp_dir_destroy, success)) {
+}
+
+// Reclaim `tree`'s run-id root per the destroy disposition (remote bases clamp to NEVER).
+static void DestroyTree(TempDirTree &tree, bool success) {
+	if (tree.base.IsRemote() || !DestroyFires(temp_dir_destroy, success)) {
 		return;
 	}
 	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-	// Remove the HOME sandbox sibling first, so the $BASE-empty check in the ancestor walk below can
-	// still reclaim the base when the run owns it.
-	string home = ResolveHomeDir();
-	if (fs->DirectoryExists(home)) {
-		try {
-			fs->RemoveDirectory(home); // recursive
-		} catch (...) {
+	// The root subsumes any leftover per-test dirs; ancestors go only up to a pre-existing $BASE.
+	ReclaimLevels(*fs, TreeRunIdRoot(tree).ToString(), tree.run_created_levels);
+}
+
+void DestroyTempDir(bool success) {
+	// Before the trees: HOME sits under $BASE, so leaving it would fail their emptiness check and strand
+	// a base this run owns. Local even when the primary base is not, hence outside the remote clamp.
+	if (DestroyFires(temp_dir_destroy, success)) {
+		duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+		string home = GetTempDirHome();
+		if (fs->DirectoryExists(home)) {
+			try {
+				fs->RemoveDirectory(home); // recursive
+			} catch (...) {
+			}
 		}
 	}
-	// Remove the run-id root recursively (subsumes any leftover per-test dirs), then reclaim
-	// this-run-created ancestors up to (but not past) a pre-existing $BASE.
-	ReclaimLevels(*fs, ResolveRunIdRoot(), temp_dir_run_created_levels);
+	auto &local = LocalTree();
+	if (&local != &primary_tree) {
+		DestroyTree(local, success);
+	}
+	DestroyTree(primary_tree, success);
+}
+
+// Fired at test end with THIS test's pass/fail. Only the $TEST_ID level is in scope -- $RUN_ID/$BASE
+// were made by PrepareTempDir, so ReclaimLevels stops there.
+static void DestroyTestTree(TempDirTree &tree, bool success) {
+	if (!tree.base.IsRemote()) {
+		string leaf = tree.active_test_leaf;
+		if (!leaf.empty() && DestroyFires(temp_dir_destroy, success)) {
+			duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+			ReclaimLevels(*fs, leaf, tree.test_created_levels);
+		}
+	}
+	tree.active_test_leaf.clear();
+	tree.test_created_levels.clear();
 }
 
 void DestroyTestTempDir(bool success) {
-	// TEST_ID destroy: fired at test end using THIS test's pass/fail. Reclaims only the
-	// $TEST_ID level this test's path created -- $RUN_ID/$BASE pre-existed (created by
-	// PrepareTempDir at startup), so ReclaimLevels stops there.
-	if (!FileSystem::IsRemoteFile(temp_dir_base)) {
-		string leaf = temp_dir_active_test_leaf;
-		if (!leaf.empty() && DestroyFires(temp_dir_destroy, success)) {
-			duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
-			ReclaimLevels(*fs, leaf, temp_dir_test_created_levels);
-		}
+	auto &local = LocalTree();
+	if (&local != &primary_tree) {
+		DestroyTestTree(local, success);
 	}
-	temp_dir_active_test_leaf.clear();
-	temp_dir_test_created_levels.clear();
+	DestroyTestTree(primary_tree, success);
 }
-// -----------------------------------------------------------------------------
 
-string TestDirectoryPath() {
-	string path = ResolveTempDirPath(); // $BASE/[RUN_ID]/[TEST_ID]
-	// Remote base: pure string, no mkdir (the test owns materialization).
-	if (FileSystem::IsRemoteFile(temp_dir_base)) {
+// $BASE/[RUN_ID]/[TEST_ID], materializing the $TEST_ID level on first request -- lazily, because the
+// test name isn't known until a test runs. Records only what this per-test path creates.
+static string MaterializeTestPath(TempDirTree &tree) {
+	string path = TreeTestPath(tree).ToString();
+	if (tree.base.IsRemote()) {
 		return path;
 	}
-	// $TEST_ID is resolved and materialized here, lazily, the first time a given test's
-	// dir is requested (the test name isn't known until a test runs; $BASE/$RUN_ID were
-	// already materialized by PrepareTempDir at startup). We record only the levels this
-	// per-test path creates so DestroyTestTempDir reclaims exactly those.
-	string root = ResolveRunIdRoot();
-	if (path != root && path != temp_dir_active_test_leaf) {
-		temp_dir_active_test_leaf = path;
-		temp_dir_test_created_levels.clear();
-		if (temp_dir_create != TempDirCreate::NEVER) {
+	string root = TreeRunIdRoot(tree).ToString();
+	if (path != root && path != tree.active_test_leaf) {
+		tree.active_test_leaf = path;
+		tree.test_created_levels.clear();
+		if (TreeCreate(tree) != TempDirCreate::NEVER) {
 			duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
 			if (!fs->DirectoryExists(path)) {
-				RecordAndCreateLevels(*fs, path, temp_dir_test_created_levels);
+				RecordAndCreateLevels(*fs, path, tree.test_created_levels);
 			}
 		}
 	}
 	return path;
+}
+// -----------------------------------------------------------------------------
+
+string TestDirectoryPath() {
+	return MaterializeTestPath(primary_tree);
+}
+
+string LocalTestDirectoryPath() {
+	return MaterializeTestPath(LocalTree());
 }
 
 void SetDeleteTestPath(bool delete_path) {

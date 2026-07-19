@@ -105,6 +105,18 @@ public:
 	static void AppendSelectTagSet(const Value &tag_set);
 	static void AppendSkipTagSet(const Value &tag_set);
 
+	//! --temp-dir-* family + run-id + env-passthrough: on_set_option hooks bridging the generic option
+	//! table to the test_helpers setters of record (see test_helpers.hpp).
+	static void SetTempDirBaseOption(const Value &input);
+	static void SetLocalTempDirBaseOption(const Value &input);
+	static void SetRunIdOption(const Value &input);
+	static void SetTempDirRunIdOption(const Value &input);
+	static void SetTempDirTestIdOption(const Value &input);
+	static void SetTempDirCreateOption(const Value &input);
+	static void SetTempDirDestroyOption(const Value &input);
+	static void SetDatabaseDestroyOption(const Value &input);
+	static void AppendEnvPassthrough(const Value &input);
+
 	string GetLocalExtensionRepository() const;
 	void SetLocalExtensionRepository(const string &repo);
 
