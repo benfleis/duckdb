@@ -124,6 +124,9 @@ bool PrepareTempDir(string &error);
 void DestroyTempDir(bool success);
 //! Executes the TEST_ID destroy disposition using THIS test's pass/fail (called at test end).
 void DestroyTestTempDir(bool success);
+//! LOCAL_TEMP_DIR: a guaranteed-local scratch dir (<abs default base>/<RUN_ID>), for use when the
+//! primary temp dir is remote. Materialized (local-only) on first call, reaped by DestroyTempDir.
+string GetLocalTempDir();
 // -----------------------------------------------------------------------------
 
 void SetEmitOnSkip(bool emit);

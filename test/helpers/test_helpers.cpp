@@ -42,6 +42,9 @@ static DatabaseDestroy database_destroy = DatabaseDestroy::ON_SUCCESS;
 static vector<string> temp_dir_run_created_levels;  // $BASE..$RUN_ID (main / Prepare|DestroyTempDir)
 static vector<string> temp_dir_test_created_levels; // $TEST_ID (per-test path)
 static string temp_dir_active_test_leaf;            // currently-materialized TEST_ID dir ("" when none)
+// LOCAL_TEMP_DIR mirror: a guaranteed-local scratch dir used when the primary temp dir ($BASE) is
+// remote. Resolved+materialized once on first GetLocalTempDir(), reaped by DestroyTempDir ("" when unused).
+static string local_temp_dir;
 
 bool NO_FAIL(QueryResult &result) {
 	if (result.HasError()) {
@@ -441,6 +444,17 @@ bool PrepareTempDir(string &error) {
 }
 
 void DestroyTempDir(bool success) {
+	// LOCAL_TEMP_DIR mirror reap: local by construction, so it survives the remote clamp below (which is
+	// exactly the configuration in which the mirror exists). Reaped on success, retained on failure.
+	if (!local_temp_dir.empty() && success && !FileSystem::IsRemoteFile(local_temp_dir)) {
+		duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+		if (fs->DirectoryExists(local_temp_dir)) {
+			try {
+				fs->RemoveDirectory(local_temp_dir); // recursive
+			} catch (...) {
+			}
+		}
+	}
 	// Remote clamp: destroy is forced to NEVER for remote bases.
 	if (FileSystem::IsRemoteFile(temp_dir_base)) {
 		return;
@@ -476,6 +490,27 @@ void DestroyTestTempDir(bool success) {
 	}
 	temp_dir_active_test_leaf.clear();
 	temp_dir_test_created_levels.clear();
+}
+
+// LOCAL_TEMP_DIR mirror: a guaranteed-local scratch dir, requested (via test_config) only when the
+// primary temp dir ($BASE) is remote -- an object store can't back a local temp path, yet tests still
+// need somewhere local to stage/spill. Composed as <abs default base>/<RUN_ID> so it is unique per
+// invocation (no collision with a concurrent run) and materialized lazily on first request; the path is
+// cached and recorded for reap by DestroyTempDir. Always local by construction -- the remote clamp on the
+// primary temp-dir machinery never touches it.
+string GetLocalTempDir() {
+	duckdb::unique_ptr<FileSystem> fs = FileSystem::CreateLocal();
+	if (local_temp_dir.empty()) {
+		string base = TESTING_DIRECTORY_NAME;
+		if (!fs->IsPathAbsolute(base)) {
+			base = fs->JoinPath(TestGetCurrentDirectory(), base);
+		}
+		local_temp_dir = fs->JoinPath(base, ResolveRunId());
+	}
+	if (!FileSystem::IsRemoteFile(local_temp_dir) && !fs->DirectoryExists(local_temp_dir)) {
+		fs->CreateDirectoriesRecursive(local_temp_dir);
+	}
+	return local_temp_dir;
 }
 // -----------------------------------------------------------------------------
 

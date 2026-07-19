@@ -156,6 +156,22 @@ void TestConfiguration::UpdateEnvironment() {
 	test_env["RUN_ID"] = GetTempDirRunId();               // RUN_ID (--run-id, or generated); always set
 	test_env["CATALOG_DIR"] = temp_dir + "/" + test_uuid; // _not_ guaranteed to exist
 
+	// LOCAL_DATA_DIR / LOCAL_TEMP_DIR: a guaranteed-local mirror of DATA_DIR / TEMP_DIR. When the
+	// primary is a local path the mirror equals it; when the primary is remote (e.g. az://...) the mirror
+	// falls back to a local path, so a test always has a local dir to stage/spill in even against a remote
+	// root. This is the one resolver of record (SPEC 11.2): an explicit LOCAL_X (driver-supplied via
+	// `test_env`) wins and the if-unset branch no-ops -- HasTestEnv() forces the config overlay so the
+	// check sees a driver-provided key. GetLocalTempDir() materializes the mirror (local-only, no-op when
+	// the primary is local); DestroyTempDir reaps it on success.
+	if (!HasTestEnv("LOCAL_DATA_DIR")) {
+		test_env["LOCAL_DATA_DIR"] =
+		    FileSystem::IsRemoteFile(test_env["DATA_DIR"]) ? working_dir + "/data" : test_env["DATA_DIR"];
+	}
+	if (!HasTestEnv("LOCAL_TEMP_DIR")) {
+		test_env["LOCAL_TEMP_DIR"] =
+		    FileSystem::IsRemoteFile(test_env["TEMP_DIR"]) ? GetLocalTempDir() : test_env["TEMP_DIR"];
+	}
+
 	// Re-overlay caller `test_env` config entries so they win over the standard defaults just recomputed
 	// above (important when a cwd change re-runs UpdateEnvironment).
 	LoadTestEnvFromConfig();
